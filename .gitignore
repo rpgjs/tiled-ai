@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.tmp/
+*.log
+.env
+.env.*
+!.env.example
+tiled-ai.config.json
+config.local.json
+*.pem
+*.key
+core
+core.*

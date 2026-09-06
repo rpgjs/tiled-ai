@@ -1,0 +1,22 @@
+{
+  "tiled": "1.12.2",
+  "checks": [
+    "Explicit extension disconnect and same-session reconnect",
+    "Asynchronous HTTP, map and selection inspection",
+    "MCP labeled atlas images",
+    "Immediate unsaved mutation, deduplication, single Undo/Redo",
+    "User edit conflict",
+    "Locks and whole-batch prevalidation",
+    "Disjoint selection mask",
+    "Four orientations, finite/infinite maps, negative cells, flags and Tiled rendering",
+    "Objects, typed writes and grouped Undo",
+    "Fill, replace, object update, polygons and typed property serialization",
+    "External tileset collision Undo",
+    "Closed document rejected; active tab does not redirect target",
+    "Nested group locks, sparse image collections and explicit targeting across active tabs",
+    "PNG-only TSX creation, overwrite refusal, idempotency, Wang profile/reference equivalence, update conflict, Undo and saved reload",
+    "MCP creates four map orientations, deduplicates creation/save, refuses overwrite, saves relative TSX links, preserves Undo and reopens the saved map",
+    "Terrain borders, inner/outer corners, holes, islands, disjoint selection, locks, missing combinations, negative cells and four orientation outcomes",
+    "RPGJS house generated through MCP, saved and Undo/Redo verified"
+  ]
+}

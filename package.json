@@ -1,0 +1,40 @@
+{
+  "name": "tiled-ai",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "check": "npm run typecheck && npm test && npm run build && npm run check:public",
+    "demo:assets": "node scripts/demo-assets.mjs",
+    "test:tiled": "node scripts/test-tiled.mjs",
+    "format:check": "prettier --check \"packages/**/*.ts\" \"scripts/*.mjs\" \"tests/*.ts\"",
+    "check:public": "node scripts/check-public.mjs",
+    "test:terrain": "node scripts/test-tiled.mjs --terrain",
+    "demo:grass:assets": "node scripts/demo-grass-assets.mjs"
+  },
+  "devDependencies": {
+    "@mapeditor/tiled-api": "^1.12.0",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.0",
+    "sharp": "^0.35.4",
+    "zod": "^3.25.0"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "tiled-ai": "dist/cli.mjs"
+  }
+}

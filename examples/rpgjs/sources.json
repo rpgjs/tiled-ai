@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/rpgjs/starter",
+  "revision": "9156f8af780cf9cfcf00c04d49561c81462d650a",
+  "sources": [
+    {
+      "url": "https://raw.githubusercontent.com/rpgjs/starter/9156f8af780cf9cfcf00c04d49561c81462d650a/src/tiled/base.png",
+      "file": "base.png",
+      "sha256": "15a73857f1a06b4fc4393483012a849c42e752af88223c19b7536147074c837f"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/rpgjs/starter/9156f8af780cf9cfcf00c04d49561c81462d650a/src/tiled/tileset.tsx",
+      "file": "base.tsx",
+      "sha256": "305e2b86256f91a0385ffdf86180badfd5214faefe0aa79d44a204a5914f384d"
+    }
+  ]
+}
