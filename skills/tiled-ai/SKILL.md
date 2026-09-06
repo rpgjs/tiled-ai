@@ -1,11 +1,17 @@
 ---
 name: tiled-ai
-description: Inspect and edit open Tiled maps through the tiled-ai MCP server, including image-only TSX creation, Wang terrain sets, terrain painting, visual tile selection, structures, objects, properties and collisions. Use for requests to build or modify content directly in Tiled.
+description: Inspect and edit open Tiled maps through the tiled-ai MCP server, including image-only TSX creation, Wang terrain sets, terrain painting, visual tile selection, structures, objects, properties and collisions. Use to set up the integration or build and modify content directly in Tiled.
 ---
 
 # Tiled AI
 
 Use the connected `tiled-ai` MCP tools to edit the live document. The extension applies changes through Tiled's API and Undo stack. Map edits do not save files automatically. TSX/TMX creation and explicit `save_tileset`/`save_map` write files.
+
+## Bootstrap when needed
+
+When the user asks to install, connect or use this integration and prerequisites are missing, follow [references/setup.md](references/setup.md). With shell/filesystem tools, install the extension, configure the MCP client and start the shared bridge within that request's scope. Reuse existing installations and secrets. Do not merely describe commands that you can execute. Ask only for a missing location or a manual editor/client action you cannot perform safely.
+
+Discover the actual MCP tool names from the available tool catalog before calling them. In code-mode, search `ALL_TOOLS` when available; never invent a JavaScript identifier such as `tools.mcp__tiled_ai__get_editor_state`. An absent tool, a bridge connection failure and an empty editor session list are different conditions. A skill can install software but cannot inject tools into a running task's catalog; report which setup steps succeeded and whether a client reload is still required.
 
 ## Establish the target
 

@@ -226,6 +226,11 @@ async function main() {
   }
   const c = await config();
   const shared = new SharedBridge(c.port, c.token);
+  if (command === "bridge-start") {
+    await shared.ensure(fileURLToPath(import.meta.url), configPath);
+    console.log(JSON.stringify({ started: true, ...(await shared.health()) }));
+    return;
+  }
   if (command === "bridge-stop") {
     await shared.stop();
     console.log("Shared bridge stopped. Reconnect Tiled after restarting.");
@@ -255,7 +260,7 @@ async function main() {
   }
   if (command !== "serve")
     throw Error(
-      "Usage: cli.mjs init|install|doctor|serve|bridge|bridge-stop [--config PATH]",
+      "Usage: cli.mjs init|install|doctor|serve|bridge|bridge-start|bridge-stop [--config PATH]",
     );
   await shared.ensure(fileURLToPath(import.meta.url), configPath);
   const server = new McpServer({ name: "tiled-ai", version: "0.1.0" });

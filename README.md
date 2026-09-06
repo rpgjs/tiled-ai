@@ -40,7 +40,7 @@ Try: “Inspect the tilesets and build a house in the selected area, with a path
 
 `serve` automatically starts one detached `bridge` process when needed. Concurrent clients reuse the authenticated bridge and share its editor sessions, image-import preparation and request deduplication. Closing a Codex task only closes its stdio client, leaving Tiled and other tasks connected. Conflicting edits still require fresh document revisions.
 
-The bridge stays running after the last client exits. To stop it explicitly, run `node dist/cli.mjs bridge-stop` with the same `--config` if customized. Restart the MCP integration to start it again, then reconnect Tiled explicitly. For startup diagnostics, `node dist/cli.mjs bridge` runs the bridge in the foreground when the port is free. No secret is passed on the command line.
+Run `node dist/cli.mjs bridge-start` to start or reuse the shared bridge explicitly; it returns promptly. The bridge stays running after the last client exits. To stop it explicitly, run `node dist/cli.mjs bridge-stop` with the same `--config` if customized. Restart the MCP integration to start it again, then reconnect Tiled explicitly. For startup diagnostics, `node dist/cli.mjs bridge` runs the bridge in the foreground when the port is free. No secret is passed on the command line.
 
 When upgrading from the original single-client version, stop the old `serve` process that owns the bridge port, rebuild, and restart the MCP integration in Codex. Then use **Tiled AI: Connect**. The new client reports `BRIDGE_INCOMPATIBLE` if an older server or a service with another secret occupies its port. It does not kill that process automatically. After upgrading a running shared bridge, use `bridge-stop` and restart it to load the new code. The existing extension and Codex MCP command remain compatible.
 
@@ -104,7 +104,7 @@ See the [tool reference](skills/tiled-ai/references/tools.md) and [terrain workf
 npx skills add . --skill tiled-ai
 ```
 
-The [tiled-ai skill](skills/tiled-ai/SKILL.md) guides inspection, visual tile choice, grid recognition, TSX/Wang creation, bounded painting and recovery. It uses the configured MCP server and contains no model. The Skills CLI installs instructions; it does not configure MCP.
+The [tiled-ai skill](skills/tiled-ai/SKILL.md) guides inspection, visual tile choice, grid recognition, TSX/Wang creation, bounded painting and recovery. It contains no model. When prerequisites are missing, its [setup workflow](skills/tiled-ai/references/setup.md) guides an agent with local shell access to install the extension, configure MCP and start the bridge. The Skills CLI itself only installs instructions. Reloading Tiled or the client may still require a manual action.
 
 After you publish this repository, install it with `npx skills add <owner>/<repo> --skill tiled-ai`. Publication is optional and is not performed by the setup scripts.
 

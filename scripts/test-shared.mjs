@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createServer } from "node:net";
@@ -48,6 +49,15 @@ try {
   for (const c of [first, second])
     assert.ok((await c.listTools()).tools.some((t) => t.name === "create_map"));
   const original = await post("/health", {});
+  const started = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [resolve("dist/cli.mjs"), "bridge-start", "--config", config],
+      { encoding: "utf8" },
+    ),
+  );
+  assert.equal(started.started, true);
+  assert.equal(started.pid, original.pid);
   const { sessionId } = await post("/connect", { version: 1 });
   pollLoop = (async () => {
     while (running) {
