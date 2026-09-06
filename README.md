@@ -1,136 +1,74 @@
 # Tiled AI
 
-A TypeScript extension and MCP server for inspecting and editing live Tiled documents. A multimodal AI client can inspect tile images, build structures, create TSX tilesets from images, define Wang terrain sets and paint matching terrain through Tiled's API.
+**Describe your map. Watch your AI build it in Tiled.**
 
-![House built in Tiled](examples/rpgjs/house.png)
+Connect your AI assistant to [Tiled Map Editor](https://www.mapeditor.org/) through MCP. Start with a few images or an existing map, describe the scene you want, and let the assistant create tilesets, connect terrains and build directly in the editor.
 
-## Quick start
+[![A woodland map built by AI in Tiled, with a cottage, paths, trees and a pond](docs/media/lpc-map.png)](docs/media/tiled-ai-demo.mp4)
 
-Requires Node.js 24 and Tiled 1.12.2. Tested on Linux with the Tiled AppImage. Windows and macOS have not been validated.
+**[▶ Watch the demo — 45 seconds, sped up](docs/media/tiled-ai-demo.mp4)**
+
+## A map built 100% by AI
+
+This demo was made with **Codex + GPT6 Astra**. The human specified the **LPC (Liberated Pixel Cup)** art style; Codex found the images itself, then used those images to create **TSX tilesets, a TMX map and Wang terrain sets**, arranged across multiple layers.
+
+The map construction was handled entirely by the AI. **A second prompt was needed to refine the house.** The video is sped up, so it does not represent real-time generation speed.
+
+The pixel artwork is by **Lanea Zimmerman (Sharm)**, from the LPC base assets. The AI assembled the scene using that existing artwork. Thank you to Sharm and the LPC community for making these assets available. [Artwork credits, sources and licenses →](docs/media/CREDITS.md)
+
+## What you can ask for
+
+- **Build a scene:** “Create a woodland cottage with a winding path, a pond and a bridge.”
+- **Start from images:** “Turn these PNGs into tilesets, define the terrain transitions and create a new map.”
+- **Improve a map:** “Refine this house and add details inside the selected area.”
+- **Prepare gameplay:** “Add collision objects around the house and trees.”
+
+You keep a normal Tiled project: editable layers, tiles, objects and properties. Map changes appear immediately and can be undone. Ask the assistant to save when you want TSX and TMX files on disk.
+
+## Get started with your AI
+
+You need **Tiled 1.12.2**, **Node.js 24+**, and an AI client with MCP and image support. The demo uses Codex; another compatible MCP client can use the same server. Local validation has been performed on Linux; Windows and macOS are not yet tested.
+
+**1. Install the companion skill**
+
+Run this in your project directory and select your AI agent when prompted:
 
 ```sh
-npm ci
-npm run build
-node dist/cli.mjs init
-node dist/cli.mjs install --extensions "$HOME/.config/tiled/extensions"
+npx skills add rpgjs/tiled-ai --skill tiled-ai
 ```
 
-Use the extensions directory shown in Tiled's preferences on other systems or custom installations. Installation copies the extension and its local configuration. The CLI generates a private local secret; never commit this configuration.
+The skill gives your assistant the setup instructions and the workflow for working with Tiled. It is installed with the [Skills CLI](https://skills.sh/).
 
-Configure your MCP client with an absolute path, adapting this example to its configuration format:
+**2. Ask your assistant to set things up**
 
-```json
-{
-  "mcpServers": {
-    "tiled-ai": {
-      "command": "node",
-      "args": ["/path/to/tiled-ai/dist/cli.mjs", "serve"]
-    }
-  }
-}
-```
+> Use the tiled-ai skill to set up this integration on my machine. Install the Tiled extension, configure the MCP server, start the shared bridge and verify access to the editor. Reuse any existing installation.
+
+With local terminal access, the assistant can carry out the installation. The skill itself is a set of instructions; your assistant performs the setup. It may need you to restart Tiled to load the extension or refresh your AI client so the MCP tools become available. Prefer manual setup? See the [advanced guide](docs/advanced.md#manual-installation).
+
+**3. Connect Tiled**
 
 Start the MCP client and Tiled, open a map and select an area. Use **Map → Tiled AI: Connect** if Tiled is already running. **Disconnect** and **Status** are in the same menu. Reconnect explicitly after a connection loss.
 
-Try: “Inspect the tilesets and build a house in the selected area, with a path to the door and collisions.” The client model must support images to choose tiles visually.
+Starting from scratch? Keep Tiled open and ask the assistant to create a new map instead.
 
-`node dist/cli.mjs doctor` shows local configuration paths and the port. Commands accept `--config /path/to/config.json`. To change the port, edit the local configuration and reinstall the extension using that same configuration. A shared background bridge owns the port. Each Codex task starts a lightweight stdio client that connects to that same bridge; multiple Tiled instances retain separate editor sessions.
+**4. Describe what you want**
 
-### Multiple Codex tasks and upgrades
+> Use tiled-ai to create a 24 × 20 woodland map from the images in my assets folder. Add a cottage, winding paths, a pond and a bridge, using separate layers. Inspect the images first, create the TSX tilesets and Wang terrain sets where appropriate, then build and check the result in Tiled. Save the TSX and TMX files in my output folder.
 
-`serve` automatically starts one detached `bridge` process when needed. Concurrent clients reuse the authenticated bridge and share its editor sessions, image-import preparation and request deduplication. Closing a Codex task only closes its stdio client, leaving Tiled and other tasks connected. Conflicting edits still require fresh document revisions.
+Give the assistant an accessible image path or HTTPS URL and a destination for the project. It can ask a focused question if the tile grid or terrain connections are ambiguous. You can also ask it to find artwork in a particular style, as in the demo; that search uses the AI client's own browsing tools.
 
-Run `node dist/cli.mjs bridge-start` to start or reuse the shared bridge explicitly; it returns promptly. The bridge stays running after the last client exits. To stop it explicitly, run `node dist/cli.mjs bridge-stop` with the same `--config` if customized. Restart the MCP integration to start it again, then reconnect Tiled explicitly. For startup diagnostics, `node dist/cli.mjs bridge` runs the bridge in the foreground when the port is free. No secret is passed on the command line.
+## Advanced
 
-When upgrading from the original single-client version, stop the old `serve` process that owns the bridge port, rebuild, and restart the MCP integration in Codex. Then use **Tiled AI: Connect**. The new client reports `BRIDGE_INCOMPATIBLE` if an older server or a service with another secret occupies its port. It does not kill that process automatically. After upgrading a running shared bridge, use `bridge-stop` and restart it to load the new code. The existing extension and Codex MCP command remain compatible.
+The implementation details are in the [advanced guide](docs/advanced.md), so you can start building without learning the protocol first.
 
-Tiled's **connected** status describes its link to the bridge; it cannot guarantee that a particular Codex task loaded MCP tools. Check the task's MCP integration as well. A new task now reuses the bridge instead of failing with `EADDRINUSE`.
+| Looking for… | Read this |
+| --- | --- |
+| Manual installation and MCP configuration | [Setup](docs/advanced.md#manual-installation) |
+| Multiple AI tasks, server lifecycle and upgrades | [Shared bridge](docs/advanced.md#multiple-codex-tasks-and-upgrades) |
+| Image import, TSX/TMX creation and Wang tools | [Image-to-map workflow](docs/advanced.md#image--tsx--tmx--terrain) |
+| Supported orientations and known terrain limits | [Terrain limitations](docs/advanced.md#terrain-limitations) |
+| Architecture, revisions, Undo and recovery | [Architecture and guarantees](docs/advanced.md#architecture-and-guarantees) |
+| Reproducible examples and tests | [Development and validation](docs/advanced.md#examples-and-validation) |
+| Instructions your assistant follows | [Companion skill](skills/tiled-ai/SKILL.md) |
 
-## Image → TSX → TMX → terrain
-
-1. `inspect_tileset_image` accepts an absolute local image path or HTTPS URL, including GitHub `blob` links. It returns dimensions, an image preview and possible grids. With a saved document as context it suggests a `tilesets` directory beside that document. Otherwise the agent asks for a destination.
-2. `create_tileset_from_image` requires explicit grid dimensions, margin, spacing, name and absolute TSX output path. It imports the image next to the TSX, writes a relative image reference through Tiled's TSX writer, and opens the new tileset. Existing TSX files are never intentionally overwritten.
-3. Inspect annotated pages with `get_tileset_images`, then use `create_wang_set` or `update_wang_set`. Edge, corner and mixed definitions use eight indices in Tiled order: top, top-right, right, bottom-right, bottom, bottom-left, left, top-left. Zero means no terrain; colors are numbered from one. Definitions and tile references are validated before editing.
-4. If no map exists, `create_map` creates and opens a new TMX with explicit cell dimensions, tile dimensions and destination. It writes the initial blank map and refuses an existing destination. Then `attach_tileset` attaches an open tileset to the target map with a revision check and map Undo. `paint_terrain` prepares tiles with Tiled's Wang engine, validates the generated cells and applies one map Undo macro. Use `list_wang_sets` to obtain live IDs.
-5. Verify the affected region and `get_region_image`. Use `save_tileset` and `save_map` when saving is requested. Map painting never saves the map automatically. Save external tilesets separately before sharing the TMX.
-
-The exact [Grass example image](examples/grass/ATTRIBUTION.md) has a verified `pipoya-grass-48` profile: 32 × 32 cells in eleven blocks of 48 tiles. Recognition requires the image's SHA-256, not its name or dimensions alone. Other images receive grid candidates, not invented terrain assignments. An agent must inspect centers, edges and corners and ask a focused question when the evidence is ambiguous. Metadata generation does not create pixels or guarantee that an arbitrary image contains a complete terrain.
-
-![Grass terrain example](examples/grass/terrain.png)
-
-### Creating and saving maps
-
-`create_map` requires `sessionId`, a unique `requestId`, an absolute `.tmx` `outputPath`, `width`/`height` in cells and `tileWidth`/`tileHeight` in pixels. It defaults to an orthogonal finite map with one `Ground` tile layer. Supply `layers` to choose initial tile layer names, `orientation` and `infinite` as needed. Staggered/hexagonal maps accept `staggerAxis` and `staggerIndex`; hexagonal maps require a positive `hexSideLength` bounded by the tile dimension on that axis. Initial dimensions are limited to 1,048,576 cells and 4,096 per axis.
-
-The initial blank TMX is saved and opened; subsequent editing stays unsaved until requested. Creation returns `fileCreated`, `documentOpened`, `documentId` and a revision. File creation is not an Undo operation. If opening fails after writing, recover with `open_map` instead of recreating the file.
-
-`save_map` takes the target document, fresh revision and unique request ID. With no `outputPath`, it saves the map's associated TMX and keeps the live document and Undo history. An optional different absolute `.tmx` path writes a new copy and refuses an existing file. This copy does **not** retarget the live document or clear its modified flag; the result reports `savedCopy`, `documentFilePath` and `modified`. This also allows exporting an untitled map. `open_map` opens that copy if needed. Saving a map does not save its external tilesets, and Undo does not revert a disk write.
-
-### Terrain limitations
-
-The painter supports square-cell Wang topology on orthogonal and isometric maps. Staggered and hexagonal maps return `UNSUPPORTED_TERRAIN_ORIENTATION` before mutation. Ordinary tile and object tools support all four orientations. Transformed neighboring terrain tiles require an explicit transformed definition and are currently rejected by the painter.
-
-Painting takes a footprint of cells, intersected with the exact active selection. It preserves neighbors and rejects a boundary that would require editing outside that footprint. Missing patterns produce `MISSING_WANG_PATTERN`; a one-cell island is not possible with the supplied Grass profile. Variants may share a Wang ID. Tiled chooses among matching variants; the bridge verifies its result before applying it.
-
-**Tiled 1.12.2 workaround:** native terrain-color renaming after increasing the color count can crash Redo. The extension stores names in the undoable `tiled-ai:terrain-names` Wang-set property. MCP returns those names immediately. Explicit `save_tileset` exports them to standard TSX color names; reopen the TSX to see updated native color labels. Ordinary Tiled Save preserves the property but may retain old native labels. The tileset Undo history remains usable until the document is closed. `save_tileset` currently supports TSX destinations only. The regression is exercised by the real integration test; the relevant native commands are [color count changes](https://github.com/mapeditor/tiled/blob/v1.12.2/src/tiled/changewangsetdata.cpp) and [color name changes](https://github.com/mapeditor/tiled/blob/v1.12.2/src/tiled/changewangcolordata.cpp).
-
-## Architecture and guarantees
-
-```text
-AI clients → separate MCP stdio clients → shared local bridge → .mjs extension → Tiled API
-```
-
-- `packages/protocol`: shared Zod schemas, types, limits and errors.
-- `packages/extension`: live documents, validation, editing, rendering and Undo.
-- `packages/server`: MCP server, local bridge, request deduplication and annotated image sheets.
-
-The extension targets ES2016 for Tiled's Qt engine, with small compatibility helpers and no Node runtime in Tiled. Asynchronous `XMLHttpRequest` long polling keeps the editor responsive. The bridge binds to `127.0.0.1`, requires a local secret and rejects browser requests with an `Origin` header. No arbitrary JavaScript or shell execution tool is exposed. Image imports, TSX/TMX creation and explicit saves are file-writing operations.
-
-Document edits require a session ID, document ID, unique request ID and revision from `get_map_info`. Revisions include live content, selection and Wang definitions. References are checked before starting an Undo macro. Batch references resolve against the initial state; create layers before a batch that uses them. External tilesets have their own document and Undo history.
-
-Tile coordinates are integer cells; object coordinates follow Tiled's native orientation conventions. Disjoint selections retain their exact mask. Tile operations refuse writes outside the active selection rather than relying on Tiled's silent clipping.
-
-After a lost response, inspect `get_request_status`. A dispatched request may already have applied. Identical retries are deduplicated within the running session; a different payload cannot reuse its ID. Reconnecting the same extension can recover its cached result. After a shared bridge or extension restart, inspect documents and files before deciding what remains. TSX creation reports `fileCreated` and `documentOpened`; attachment is a separate request. Recover an existing TSX with `open_tileset`, then check whether it is already attached. Use `open_map` for an existing TMX. A staged image may remain after failed creation. Do not blindly repeat a file creation or mutation.
-
-Unexpected native edit errors report completed operations and whether the failing operation may have changed the document. File saving is explicit and is not undone by document Undo.
-
-Limits: 16,384 cells per region/batch; 256 data items or 64 tile images per page; revision inspection of at most 1,048,576 occupied-region cells; at most 32 retained revisions with earlier eviction to bound memory. Image imports are limited to 16 MiB and 16 megapixels, using non-animated PNG, JPEG or WebP. Custom class/enum properties are readable but not writable. Structures accept tiles and unrotated geometric objects; ordinary object tools also support text, tile objects and rotation.
-
-See the [tool reference](skills/tiled-ai/references/tools.md) and [terrain workflow](skills/tiled-ai/references/terrain.md).
-
-## Companion skill
-
-```sh
-npx skills add . --skill tiled-ai
-```
-
-The [tiled-ai skill](skills/tiled-ai/SKILL.md) guides inspection, visual tile choice, grid recognition, TSX/Wang creation, bounded painting and recovery. It contains no model. When prerequisites are missing, its [setup workflow](skills/tiled-ai/references/setup.md) guides an agent with local shell access to install the extension, configure MCP and start the bridge. The Skills CLI itself only installs instructions. Reloading Tiled or the client may still require a manual action.
-
-After you publish this repository, install it with `npx skills add <owner>/<repo> --skill tiled-ai`. Publication is optional and is not performed by the setup scripts.
-
-## Examples and validation
-
-```sh
-npm run demo:assets
-npm run demo:grass:assets
-npm run check
-# Includes the concurrent MCP client regression test
-npm run test:tiled
-npm run test:terrain
-# Explicitly regenerate the saved examples:
-node scripts/test-tiled.mjs --terrain --demo
-```
-
-Tests resolve `TILED_APPIMAGE` first, then `tiled` from `PATH`, and fail clearly when neither is available:
-
-```sh
-TILED_APPIMAGE=/path/to/Tiled.AppImage npm run test:terrain
-# On Linux without a display:
-xvfb-run -a npm run test:terrain
-```
-
-Real integration tests launch Tiled and an MCP client with isolated configuration, data and cache under `.tmp`. Test-only editor controls are never shipped in the extension. They verify live edits, revision conflicts, lost responses, Undo/Redo, file creation/reopening, terrain boundaries, holes and negative coordinates. Unsupported terrain orientations are tested as explicit errors.
-
-The house uses [start.tmx](examples/rpgjs/start.tmx), [house.tmx](examples/rpgjs/house.tmx) and the deterministic recipe in `scripts/house.mjs`. The Grass example is generated from its PNG alone; the companion source TSX is read only as an independent test oracle after generation. Generated assets are in [examples/grass](examples/grass), including the TSX, map, preview and pinned source hashes. See [house attribution](examples/rpgjs/ATTRIBUTION.md), [Grass attribution](examples/grass/ATTRIBUTION.md) and the [real Tiled test report](examples/rpgjs/validation.json).
-
-`npm run check:public` scans distributable files for personal paths, credential patterns and accidentally included runtime files. `.tmp`, dependencies and build outputs are excluded; tracked files are also checked when Git is available. This is a targeted accidental-disclosure check, not a guarantee that all secrets can be recognized. Keep runtime configurations, environment files, logs and private keys out of Git.
+Terrain painting currently supports orthogonal and isometric maps; ordinary editing supports all four Tiled orientations. An arbitrary image may not contain every tile needed for a complete terrain. Tiled AI creates map and tileset metadata and assembles existing pixels—it does not generate new artwork.
