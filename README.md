@@ -34,7 +34,17 @@ Start the MCP client and Tiled, open a map and select an area. Use **Map → Til
 
 Try: “Inspect the tilesets and build a house in the selected area, with a path to the door and collisions.” The client model must support images to choose tiles visually.
 
-`node dist/cli.mjs doctor` shows local configuration paths and the port. Commands accept `--config /path/to/config.json`. To change the port, edit the local configuration and reinstall the extension using that same configuration. One server owns the port; multiple Tiled instances can connect with separate sessions.
+`node dist/cli.mjs doctor` shows local configuration paths and the port. Commands accept `--config /path/to/config.json`. To change the port, edit the local configuration and reinstall the extension using that same configuration. A shared background bridge owns the port. Each Codex task starts a lightweight stdio client that connects to that same bridge; multiple Tiled instances retain separate editor sessions.
+
+### Multiple Codex tasks and upgrades
+
+`serve` automatically starts one detached `bridge` process when needed. Concurrent clients reuse the authenticated bridge and share its editor sessions, image-import preparation and request deduplication. Closing a Codex task only closes its stdio client, leaving Tiled and other tasks connected. Conflicting edits still require fresh document revisions.
+
+The bridge stays running after the last client exits. To stop it explicitly, run `node dist/cli.mjs bridge-stop` with the same `--config` if customized. Restart the MCP integration to start it again, then reconnect Tiled explicitly. For startup diagnostics, `node dist/cli.mjs bridge` runs the bridge in the foreground when the port is free. No secret is passed on the command line.
+
+When upgrading from the original single-client version, stop the old `serve` process that owns the bridge port, rebuild, and restart the MCP integration in Codex. Then use **Tiled AI: Connect**. The new client reports `BRIDGE_INCOMPATIBLE` if an older server or a service with another secret occupies its port. It does not kill that process automatically. After upgrading a running shared bridge, use `bridge-stop` and restart it to load the new code. The existing extension and Codex MCP command remain compatible.
+
+Tiled's **connected** status describes its link to the bridge; it cannot guarantee that a particular Codex task loaded MCP tools. Check the task's MCP integration as well. A new task now reuses the bridge instead of failing with `EADDRINUSE`.
 
 ## Image → TSX → TMX → terrain
 
@@ -67,7 +77,7 @@ Painting takes a footprint of cells, intersected with the exact active selection
 ## Architecture and guarantees
 
 ```text
-AI client → MCP stdio → Node.js → local HTTP RPC → .mjs extension → Tiled API
+AI clients → separate MCP stdio clients → shared local bridge → .mjs extension → Tiled API
 ```
 
 - `packages/protocol`: shared Zod schemas, types, limits and errors.
@@ -80,7 +90,7 @@ Document edits require a session ID, document ID, unique request ID and revision
 
 Tile coordinates are integer cells; object coordinates follow Tiled's native orientation conventions. Disjoint selections retain their exact mask. Tile operations refuse writes outside the active selection rather than relying on Tiled's silent clipping.
 
-After a lost response, inspect `get_request_status`. A dispatched request may already have applied. Identical retries are deduplicated within the running session; a different payload cannot reuse its ID. Reconnecting the same extension can recover its cached result. After a server or extension restart, inspect documents and files before deciding what remains. TSX creation reports `fileCreated` and `documentOpened`; attachment is a separate request. Recover an existing TSX with `open_tileset`, then check whether it is already attached. Use `open_map` for an existing TMX. A staged image may remain after failed creation. Do not blindly repeat a file creation or mutation.
+After a lost response, inspect `get_request_status`. A dispatched request may already have applied. Identical retries are deduplicated within the running session; a different payload cannot reuse its ID. Reconnecting the same extension can recover its cached result. After a shared bridge or extension restart, inspect documents and files before deciding what remains. TSX creation reports `fileCreated` and `documentOpened`; attachment is a separate request. Recover an existing TSX with `open_tileset`, then check whether it is already attached. Use `open_map` for an existing TMX. A staged image may remain after failed creation. Do not blindly repeat a file creation or mutation.
 
 Unexpected native edit errors report completed operations and whether the failing operation may have changed the document. File saving is explicit and is not undone by document Undo.
 
@@ -104,6 +114,7 @@ After you publish this repository, install it with `npx skills add <owner>/<repo
 npm run demo:assets
 npm run demo:grass:assets
 npm run check
+# Includes the concurrent MCP client regression test
 npm run test:tiled
 npm run test:terrain
 # Explicitly regenerate the saved examples:

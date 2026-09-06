@@ -1,6 +1,7 @@
 {
   "tiled": "1.12.2",
   "checks": [
+    "Two MCP clients inspect the same live Tiled session; closing one leaves the other connected",
     "Explicit extension disconnect and same-session reconnect",
     "Asynchronous HTTP, map and selection inspection",
     "MCP labeled atlas images",

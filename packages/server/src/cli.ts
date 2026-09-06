@@ -7,6 +7,7 @@ import sharp, { type OverlayOptions } from "sharp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { Bridge } from "./bridge";
+import { SharedBridge } from "./shared";
 import { AssetTools } from "./assets";
 import { toolSchemas, RpcError } from "../../protocol/src/index";
 const args = process.argv.slice(2),
@@ -223,14 +224,40 @@ async function main() {
     );
     return;
   }
+  const c = await config();
+  const shared = new SharedBridge(c.port, c.token);
+  if (command === "bridge-stop") {
+    await shared.stop();
+    console.log("Shared bridge stopped. Reconnect Tiled after restarting.");
+    return;
+  }
+  if (command === "bridge") {
+    const bridge = new Bridge(c.token),
+      assets = new AssetTools(bridge);
+    bridge.clientCall = (method, input) => assets.call(method, input);
+    let closing = false;
+    const stop = () => {
+      if (closing) return;
+      closing = true;
+      void bridge.close().then(() => process.exit(0));
+    };
+    bridge.onStop = stop;
+    process.once("SIGTERM", stop);
+    process.once("SIGINT", stop);
+    try {
+      await bridge.listen(c.port);
+    } catch (e: any) {
+      if (e.code === "EADDRINUSE") return;
+      throw e;
+    }
+    console.error("Shared Tiled AI bridge listening on 127.0.0.1:" + c.port);
+    return;
+  }
   if (command !== "serve")
     throw Error(
-      "Usage: cli.mjs init|install --extensions PATH|doctor|serve [--config PATH]",
+      "Usage: cli.mjs init|install|doctor|serve|bridge|bridge-stop [--config PATH]",
     );
-  const c = await config(),
-    bridge = new Bridge(c.token);
-  await bridge.listen(c.port);
-  const assets = new AssetTools(bridge);
+  await shared.ensure(fileURLToPath(import.meta.url), configPath);
   const server = new McpServer({ name: "tiled-ai", version: "0.1.0" });
   for (const [name, schema] of Object.entries(toolSchemas))
     server.registerTool(
@@ -244,7 +271,7 @@ async function main() {
       async (input: any) => {
         try {
           return {
-            content: await imageContent(await assets.call(name, input)),
+            content: await imageContent(await shared.call(name, input)),
           };
         } catch (e) {
           return {
@@ -264,7 +291,6 @@ async function main() {
       },
     );
   const shutdown = async () => {
-    await bridge.close();
     await server.close();
   };
   process.once("SIGTERM", () => {
@@ -277,7 +303,9 @@ async function main() {
     void shutdown();
   });
   await server.connect(new StdioServerTransport());
-  console.error("Tiled AI bridge listening on 127.0.0.1:" + c.port);
+  console.error(
+    "MCP client connected to shared Tiled AI bridge on 127.0.0.1:" + c.port,
+  );
 }
 main().catch((e) => {
   console.error(e.message);

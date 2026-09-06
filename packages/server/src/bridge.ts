@@ -24,6 +24,8 @@ interface Session {
   pollTimer?: ReturnType<typeof setTimeout>;
 }
 export class Bridge {
+  clientCall?: (method: string, input: unknown) => Promise<unknown>;
+  onStop?: () => void;
   readonly sessions = new Map<string, Session>();
   readonly server: http.Server;
   constructor(
@@ -94,6 +96,37 @@ export class Bridge {
       chunks.push(part);
     }
     const body = JSON.parse(Buffer.concat(chunks).toString());
+    if (req.url === "/health" && this.clientCall) {
+      this.send(res, 200, {
+        service: "tiled-ai-shared-bridge",
+        version: 1,
+        pid: process.pid,
+      });
+      return;
+    }
+    if (req.url === "/stop" && this.onStop) {
+      this.send(res, 200, { stopping: true });
+      setImmediate(this.onStop);
+      return;
+    }
+    if (req.url === "/mcp-call" && this.clientCall) {
+      try {
+        this.send(res, 200, {
+          ok: true,
+          result: await this.clientCall(body.method, body.input),
+        });
+      } catch (e) {
+        this.send(res, 200, {
+          ok: false,
+          error: {
+            code: e instanceof RpcError ? e.code : "INVALID_REQUEST",
+            message: e instanceof Error ? e.message : String(e),
+            details: e instanceof RpcError ? e.details : undefined,
+          },
+        });
+      }
+      return;
+    }
     if (req.url === "/connect") {
       if (body.version !== VERSION) {
         this.send(res, 400, { error: "Protocol version mismatch" });

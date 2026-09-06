@@ -192,6 +192,41 @@ try {
       sessionId: session.sessionId,
       documentId: session.documents.find((d) => d.fileName === mapPath).id,
     };
+  const secondClient = new Client({
+    name: "tiled-ai-second-task",
+    version: "1",
+  });
+  try {
+    await secondClient.connect(
+      new StdioClientTransport({
+        command: process.execPath,
+        args: [resolve("dist/cli.mjs"), "serve", "--config", config],
+        stderr: "ignore",
+      }),
+    );
+    assert.ok(
+      (await secondClient.listTools()).tools.some(
+        (t) => t.name === "paint_terrain",
+      ),
+    );
+    const response = await secondClient.callTool({
+      name: "get_editor_state",
+      arguments: {},
+    });
+    assert.equal(
+      JSON.parse(response.content[0].text).sessions[0].sessionId,
+      target.sessionId,
+    );
+  } finally {
+    await secondClient.close();
+  }
+  assert.equal(
+    (await json("get_editor_state")).sessions[0].sessionId,
+    target.sessionId,
+  );
+  checks.push(
+    "Two MCP clients inspect the same live Tiled session; closing one leaves the other connected",
+  );
   await ctl("disconnect");
   await ctl("connect");
   await sleep(100);
@@ -599,6 +634,11 @@ try {
     clearTimeout(force);
   }
   await client.close();
+  spawnSync(
+    process.execPath,
+    [resolve("dist/cli.mjs"), "bridge-stop", "--config", config],
+    { stdio: "ignore" },
+  );
   control.closeAllConnections();
   await new Promise((r) => control.close(r));
   for (const w of waits.values()) {
