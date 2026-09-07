@@ -1,4 +1,11 @@
-import { mkdir, writeFile, readFile, copyFile } from "node:fs/promises";
+import {
+  mkdir,
+  writeFile,
+  readFile,
+  copyFile,
+  rm,
+  readdir,
+} from "node:fs/promises";
 import { resolve, join } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
@@ -19,13 +26,51 @@ await sharp(resolve("examples/rpgjs/base.png"))
   .extract({ left: 0, top: 0, width: 32, height: 32 })
   .png()
   .toFile(join(root, "tile.png"));
+// Tiled reports map paths with forward slashes and tileset paths with the
+// platform separator, so identity checks must not depend on either.
+const samePath = (a, b) =>
+  typeof a === "string" &&
+  typeof b === "string" &&
+  a.split("\\").join("/") === b.split("\\").join("/");
 const collectionPath = join(root, "collection.tsx");
 await writeFile(
   collectionPath,
   '<tileset version="1.10" tiledversion="1.12.2" name="Collection" tilewidth="32" tileheight="32" tilecount="2" columns="0"><tile id="2"><image width="32" height="32" source="tile.png"/></tile><tile id="10"><image width="32" height="32" source="tile.png"/></tile></tileset>',
 );
-const ext = join(root, "config/tiled/extensions");
+// Tiled resolves its extension directory through the platform's application
+// data location. XDG_CONFIG_HOME redirects it on Linux, but Windows resolves
+// that location through the shell and ignores the variable, so the isolated
+// directory is never read there. Install uniquely named copies into the real
+// directory instead and remove them again during cleanup. An existing
+// installation keeps its own secret because the extension derives its
+// configuration file name from its own file name.
+if (process.platform === "win32" && !process.env.LOCALAPPDATA)
+  throw Error(
+    "LOCALAPPDATA is not set, so the Tiled extension directory cannot be located",
+  );
+const ext =
+  process.platform === "win32"
+    ? join(process.env.LOCALAPPDATA, "Tiled", "extensions")
+    : join(root, "config/tiled/extensions");
 await mkdir(ext, { recursive: true });
+const installed = [
+  join(ext, "tiled-ai-test.mjs"),
+  join(ext, "tiled-ai-test.config.json"),
+  join(ext, "tiled-ai-test-control.mjs"),
+];
+// A regular installation in the same directory registers the same action
+// identifiers, so `tiled.trigger` would reach an unpredictable copy and the
+// reconnect assertions would target the wrong bridge. Refuse instead of
+// producing a confusing timeout, and never move the user's own files.
+if (
+  ext !== join(root, "config/tiled/extensions") &&
+  (await readdir(ext)).some((name) => /^tiled-ai\.m?js$/.test(name))
+)
+  throw Error(
+    "An installed tiled-ai extension in " +
+      ext +
+      " would collide with this test. Move tiled-ai.mjs and tiled-ai.config.json aside, run the test, then restore them.",
+  );
 const token = randomBytes(32).toString("hex");
 const portProbe = createServer();
 await new Promise((r) => portProbe.listen(0, "127.0.0.1", r));
@@ -33,9 +78,9 @@ const port = portProbe.address().port;
 await new Promise((r) => portProbe.close(r));
 const config = join(root, "bridge.json");
 await writeFile(config, JSON.stringify({ port, token }));
-await copyFile("dist/tiled-ai.mjs", join(ext, "tiled-ai.mjs"));
+await copyFile("dist/tiled-ai.mjs", installed[0]);
 await writeFile(
-  join(ext, "tiled-ai.config.json"),
+  installed[1],
   JSON.stringify({ url: `http://127.0.0.1:${port}`, token, autoConnect: true }),
 );
 const width = 32,
@@ -95,7 +140,7 @@ function flush() {
 await new Promise((r) => control.listen(0, "127.0.0.1", r));
 const controlPort = control.address().port;
 await writeFile(
-  join(ext, "test-control.mjs"),
+  installed[2],
   `
 function http(path,body,done){const r=new XMLHttpRequest();r.open('POST','http://127.0.0.1:${controlPort}'+path,true);r.setRequestHeader('Authorization','${token}');r.onreadystatechange=()=>{if(r.readyState===4&&r.status===200)done(JSON.parse(r.responseText));};r.send(JSON.stringify(body));}
 function run(c){const m=tiled.activeAsset;switch(c.op){
@@ -107,7 +152,7 @@ case 'redo':m.redo();return true;
 case 'cell':return {id:m.layerAt(c.layer).tileAt(c.x,c.y)?.id??null,flags:m.layerAt(c.layer).flagsAt(c.x,c.y),modified:m.modified};
 case 'setcell':{const layer=m.layerAt(c.layer);const e=layer.edit();e.setTile(c.x,c.y,m.tilesets[0].tile(c.tileId),0);m.macro('Simulated user edit',()=>e.apply());return {tile:m.layerAt(c.layer).tileAt(c.x,c.y)?.id};}
 case 'open':tiled.open(c.path);return true;
-case 'activate':tiled.activeAsset=tiled.openAssets.find(a=>a.fileName===c.path);return true;
+case 'activate':tiled.activeAsset=tiled.openAssets.find(a=>FileInfo.cleanPath(a.fileName)===FileInfo.cleanPath(c.path));return true;
 case 'close':tiled.close(m);return true;
 case 'lock':m.layerAt(c.layer).locked=c.value;return true;
 case 'save':tiled.mapFormat('tmx').write(m,c.path);return true;
@@ -190,7 +235,7 @@ try {
   const session = state.sessions[0],
     target = {
       sessionId: session.sessionId,
-      documentId: session.documents.find((d) => d.fileName === mapPath).id,
+      documentId: session.documents.find((d) => samePath(d.fileName, mapPath)).id,
     };
   const secondClient = new Client({
     name: "tiled-ai-second-task",
@@ -539,7 +584,7 @@ try {
   const cs = (await json("get_editor_state")).sessions[0],
     ct = {
       sessionId: target.sessionId,
-      documentId: cs.documents.find((d) => d.fileName === collectionPath).id,
+      documentId: cs.documents.find((d) => samePath(d.fileName, collectionPath)).id,
     };
   const cset = (await json("list_tilesets", ct)).items[0];
   const cimages = await call("get_tileset_images", {
@@ -578,7 +623,7 @@ try {
     const fresh = (await json("get_editor_state")).sessions[0];
     const t = {
       sessionId: fresh.sessionId,
-      documentId: fresh.documents.find((d) => d.fileName === mapPath).id,
+      documentId: fresh.documents.find((d) => samePath(d.fileName, mapPath)).id,
     };
     await ctl("select", { x: 4, y: 4, width: 12, height: 14 });
     const set = (await json("list_tilesets", t)).items[0];
@@ -645,5 +690,6 @@ try {
     clearTimeout(w.timer);
     w.reject(Error("Test ended"));
   }
+  for (const path of installed) await rm(path, { force: true });
   await writeFile(join(root, "run.log"), logs);
 }
