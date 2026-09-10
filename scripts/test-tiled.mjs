@@ -1,5 +1,12 @@
-import { mkdir, writeFile, readFile, copyFile } from "node:fs/promises";
-import { resolve, join } from "node:path";
+import {
+  mkdir,
+  writeFile,
+  readFile,
+  rm,
+  readdir,
+  open,
+} from "node:fs/promises";
+import { resolve, join, basename, dirname } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -13,19 +20,126 @@ if (probe.error || probe.status !== 0)
   throw Error(
     "Tiled executable not found or could not start. Set TILED_APPIMAGE to its executable path, or add tiled to PATH.",
   );
-const root = resolve(".tmp/tiled-test-" + Date.now());
+const testId = randomUUID();
+const root = resolve(".tmp/tiled-test-" + testId);
 await mkdir(root, { recursive: true });
 await sharp(resolve("examples/rpgjs/base.png"))
   .extract({ left: 0, top: 0, width: 32, height: 32 })
   .png()
   .toFile(join(root, "tile.png"));
+// Tiled reports map paths with forward slashes and tileset paths with the
+// platform separator, so identity checks must not depend on either.
+const samePath = (a, b) =>
+  typeof a === "string" &&
+  typeof b === "string" &&
+  a.split("\\").join("/") === b.split("\\").join("/");
 const collectionPath = join(root, "collection.tsx");
 await writeFile(
   collectionPath,
   '<tileset version="1.10" tiledversion="1.12.2" name="Collection" tilewidth="32" tileheight="32" tilecount="2" columns="0"><tile id="2"><image width="32" height="32" source="tile.png"/></tile><tile id="10"><image width="32" height="32" source="tile.png"/></tile></tileset>',
 );
-const ext = join(root, "config/tiled/extensions");
-await mkdir(ext, { recursive: true });
+// Tiled resolves its extension directory through the platform's application
+// data location. XDG_CONFIG_HOME redirects it on Linux, but Windows resolves
+// that location through the shell and ignores the variable, so the isolated
+// directory is never read there. On Windows the test therefore installs
+// copies named after this run into the real directory and removes exactly
+// those files again, whatever else happens. An existing installation keeps
+// its own secret because the extension derives its configuration file name
+// from its own file name.
+const shared = process.platform === "win32";
+if (shared && !process.env.LOCALAPPDATA)
+  throw Error(
+    "LOCALAPPDATA is not set, so the Tiled extension directory cannot be located",
+  );
+const ext = shared
+  ? join(process.env.LOCALAPPDATA, "Tiled", "extensions")
+  : join(root, "config/tiled/extensions");
+const installed = [
+  join(ext, `tiled-ai-test-${testId}.mjs`),
+  join(ext, `tiled-ai-test-${testId}.config.json`),
+  join(ext, `tiled-ai-test-control-${testId}.mjs`),
+];
+const createdFiles = new Set();
+async function writeExclusive(path, data) {
+  const file = await open(path, "wx");
+  createdFiles.add(path);
+  try {
+    await file.writeFile(data);
+  } finally {
+    await file.close();
+  }
+}
+// Tiled loads every extension in the shared directory, and it hot-loads new
+// files while running. Two concurrent runs, an already open editor or a
+// regular installation would all pick up this run's copies: the same action
+// identifiers get registered twice, `tiled.trigger` reaches an unpredictable
+// copy, and the control extension could act on an unrelated document. Hold a
+// lock for the whole run and refuse those situations with a specific message
+// rather than moving anyone's files.
+const lockPath = shared
+  ? join(process.env.LOCALAPPDATA, "Tiled", "tiled-ai-test.lock")
+  : null;
+async function acquireLock() {
+  await mkdir(dirname(lockPath), { recursive: true });
+  let file;
+  try {
+    file = await open(lockPath, "wx");
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    // Never recover automatically: two runs could both judge the owner dead,
+    // and one would then delete the other's fresh lock. Leave it to a person,
+    // as with leftover extension files.
+    const owner = (await readFile(lockPath, "utf8").catch(() => "")).trim();
+    throw Error(
+      `${lockPath} exists, written by pid ${owner || "unknown"}. If no test run is active, delete it and rerun.`,
+    );
+  }
+  try {
+    await file.writeFile(String(process.pid));
+  } finally {
+    await file.close();
+  }
+}
+function refuseRunningTiled() {
+  const image = basename(app).toLowerCase().endsWith(".exe")
+    ? basename(app)
+    : basename(app) + ".exe";
+  const list = spawnSync(
+    "tasklist",
+    ["/FI", `IMAGENAME eq ${image}`, "/NH", "/FO", "CSV"],
+    { encoding: "utf8" },
+  );
+  // Fail closed: an unavailable process check must not read as "not running".
+  if (list.error || list.status !== 0)
+    throw Error(
+      "Could not check for a running Tiled with tasklist: " +
+        (
+          list.error?.message ?? `exit ${list.status} ${list.stderr ?? ""}`
+        ).trim(),
+    );
+  if (list.stdout.toLowerCase().includes(image.toLowerCase()))
+    throw Error(
+      `${image} is already running and would load this test's extension copies as soon as they are written. Close Tiled and rerun.`,
+    );
+}
+async function refuseForeignExtensions() {
+  const names = await readdir(ext);
+  if (names.some((n) => /^tiled-ai\.m?js$/.test(n)))
+    throw Error(
+      "An installed tiled-ai extension in " +
+        ext +
+        " would collide with this test. Move tiled-ai.mjs and tiled-ai.config.json aside, run the test, then restore them.",
+    );
+  const stale = names.filter((n) => /^tiled-ai-test-/.test(n));
+  if (stale.length)
+    throw Error(
+      "Files from an earlier test run remain in " +
+        ext +
+        ": " +
+        stale.join(", ") +
+        ". Delete them and rerun.",
+    );
+}
 const token = randomBytes(32).toString("hex");
 const portProbe = createServer();
 await new Promise((r) => portProbe.listen(0, "127.0.0.1", r));
@@ -33,11 +147,6 @@ const port = portProbe.address().port;
 await new Promise((r) => portProbe.close(r));
 const config = join(root, "bridge.json");
 await writeFile(config, JSON.stringify({ port, token }));
-await copyFile("dist/tiled-ai.mjs", join(ext, "tiled-ai.mjs"));
-await writeFile(
-  join(ext, "tiled-ai.config.json"),
-  JSON.stringify({ url: `http://127.0.0.1:${port}`, token, autoConnect: true }),
-);
 const width = 32,
   height = 24,
   base = resolve("examples/rpgjs/base.tsx");
@@ -94,9 +203,7 @@ function flush() {
 }
 await new Promise((r) => control.listen(0, "127.0.0.1", r));
 const controlPort = control.address().port;
-await writeFile(
-  join(ext, "test-control.mjs"),
-  `
+const controlSource = `
 function http(path,body,done){const r=new XMLHttpRequest();r.open('POST','http://127.0.0.1:${controlPort}'+path,true);r.setRequestHeader('Authorization','${token}');r.onreadystatechange=()=>{if(r.readyState===4&&r.status===200)done(JSON.parse(r.responseText));};r.send(JSON.stringify(body));}
 function run(c){const m=tiled.activeAsset;switch(c.op){
 case 'selection':return {selection:m.selectedArea.get().rects,layer:m.selectedLayers.map(l=>l.id)};
@@ -107,7 +214,7 @@ case 'redo':m.redo();return true;
 case 'cell':return {id:m.layerAt(c.layer).tileAt(c.x,c.y)?.id??null,flags:m.layerAt(c.layer).flagsAt(c.x,c.y),modified:m.modified};
 case 'setcell':{const layer=m.layerAt(c.layer);const e=layer.edit();e.setTile(c.x,c.y,m.tilesets[0].tile(c.tileId),0);m.macro('Simulated user edit',()=>e.apply());return {tile:m.layerAt(c.layer).tileAt(c.x,c.y)?.id};}
 case 'open':tiled.open(c.path);return true;
-case 'activate':tiled.activeAsset=tiled.openAssets.find(a=>a.fileName===c.path);return true;
+case 'activate':tiled.activeAsset=tiled.openAssets.find(a=>FileInfo.cleanPath(a.fileName)===FileInfo.cleanPath(c.path));return true;
 case 'close':tiled.close(m);return true;
 case 'lock':m.layerAt(c.layer).locked=c.value;return true;
 case 'save':tiled.mapFormat('tmx').write(m,c.path);return true;
@@ -118,9 +225,12 @@ case 'collision':return m.tile(c.tileId).objectGroup?.objectCount??0;
 case 'disconnect':tiled.trigger('TiledAIDisconnect');return true;
 case 'connect':tiled.trigger('TiledAIConnect');return true;
 }throw Error('Unknown test control');}
-function next(){http('/next',{},c=>{let result;try{result={id:c.id,result:run(c)};}catch(e){result={id:c.id,error:String(e)};}http('/result',result,next);});}next();
-`,
-);
+function next(){http('/next',{},c=>{let result;try{result={id:c.id,result:run(c)};}catch(e){result={id:c.id,error:String(e)};}http('/result',result,next);});}
+// Only the editor that opened this run's map may take control commands.
+function armed(){return tiled.openAssets.some(a=>FileInfo.cleanPath(a.fileName)===FileInfo.cleanPath(${JSON.stringify(mapPath)}));}
+var started=false;function start(){if(!started&&armed()){started=true;next();}}
+start();tiled.assetOpened.connect(start);
+`;
 function ctl(op, args = {}) {
   const id = ++controlId;
   return new Promise((resolve, reject) => {
@@ -156,7 +266,21 @@ async function rejected(name, args, code) {
   assert.equal(JSON.parse(r.content[0].text).code, code);
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+if (shared) await acquireLock();
 try {
+  if (shared) refuseRunningTiled();
+  await mkdir(ext, { recursive: true });
+  if (shared) await refuseForeignExtensions();
+  await writeExclusive(installed[0], await readFile("dist/tiled-ai.mjs"));
+  await writeExclusive(
+    installed[1],
+    JSON.stringify({
+      url: `http://127.0.0.1:${port}`,
+      token,
+      autoConnect: true,
+    }),
+  );
+  await writeExclusive(installed[2], controlSource);
   await client.connect(transport);
   transport.stderr?.on("data", (c) => {
     logs += c;
@@ -176,22 +300,20 @@ try {
   });
   tiledProcess.stdout.on("data", (c) => (logs += c));
   tiledProcess.stderr.on("data", (c) => (logs += c));
-  let state;
+  // Take the editor that opened this run's map, not the first to connect.
+  const opened = (s) => s.documents.some((d) => samePath(d.fileName, mapPath));
+  let session;
   for (let i = 0; i < 60; i++) {
     await sleep(200);
-    state = await json("get_editor_state");
-    if (state.sessions[0]?.documents?.length) break;
+    session = (await json("get_editor_state")).sessions.find(opened);
+    if (session) break;
   }
-  assert.ok(
-    state.sessions[0]?.documents?.length,
-    "Tiled did not connect: " + logs,
-  );
+  assert.ok(session, "Tiled did not connect: " + logs);
   await sleep(600);
-  const session = state.sessions[0],
-    target = {
-      sessionId: session.sessionId,
-      documentId: session.documents.find((d) => d.fileName === mapPath).id,
-    };
+  const target = {
+    sessionId: session.sessionId,
+    documentId: session.documents.find((d) => samePath(d.fileName, mapPath)).id,
+  };
   const secondClient = new Client({
     name: "tiled-ai-second-task",
     version: "1",
@@ -539,7 +661,8 @@ try {
   const cs = (await json("get_editor_state")).sessions[0],
     ct = {
       sessionId: target.sessionId,
-      documentId: cs.documents.find((d) => d.fileName === collectionPath).id,
+      documentId: cs.documents.find((d) => samePath(d.fileName, collectionPath))
+        .id,
     };
   const cset = (await json("list_tilesets", ct)).items[0];
   const cimages = await call("get_tileset_images", {
@@ -578,7 +701,7 @@ try {
     const fresh = (await json("get_editor_state")).sessions[0];
     const t = {
       sessionId: fresh.sessionId,
-      documentId: fresh.documents.find((d) => d.fileName === mapPath).id,
+      documentId: fresh.documents.find((d) => samePath(d.fileName, mapPath)).id,
     };
     await ctl("select", { x: 4, y: 4, width: 12, height: 14 });
     const set = (await json("list_tilesets", t)).items[0];
@@ -622,28 +745,34 @@ try {
   console.error(e);
   throw e;
 } finally {
-  if (
-    tiledProcess &&
-    tiledProcess.exitCode === null &&
-    tiledProcess.signalCode === null
-  ) {
-    const exited = new Promise((r) => tiledProcess.once("exit", r));
-    tiledProcess.kill("SIGTERM");
-    const force = setTimeout(() => tiledProcess.kill("SIGKILL"), 2000);
-    await exited;
-    clearTimeout(force);
+  try {
+    if (
+      tiledProcess &&
+      tiledProcess.exitCode === null &&
+      tiledProcess.signalCode === null
+    ) {
+      const exited = new Promise((r) => tiledProcess.once("exit", r));
+      tiledProcess.kill("SIGTERM");
+      const force = setTimeout(() => tiledProcess.kill("SIGKILL"), 2000);
+      await exited;
+      clearTimeout(force);
+    }
+    await client.close();
+    spawnSync(
+      process.execPath,
+      [resolve("dist/cli.mjs"), "bridge-stop", "--config", config],
+      { stdio: "ignore" },
+    );
+    control.closeAllConnections();
+    await new Promise((r) => control.close(r));
+    for (const w of waits.values()) {
+      clearTimeout(w.timer);
+      w.reject(Error("Test ended"));
+    }
+  } finally {
+    // Remove only what this run created, even if the teardown above failed.
+    for (const path of createdFiles) await rm(path, { force: true });
+    if (lockPath) await rm(lockPath, { force: true });
+    await writeFile(join(root, "run.log"), logs);
   }
-  await client.close();
-  spawnSync(
-    process.execPath,
-    [resolve("dist/cli.mjs"), "bridge-stop", "--config", config],
-    { stdio: "ignore" },
-  );
-  control.closeAllConnections();
-  await new Promise((r) => control.close(r));
-  for (const w of waits.values()) {
-    clearTimeout(w.timer);
-    w.reject(Error("Test ended"));
-  }
-  await writeFile(join(root, "run.log"), logs);
 }

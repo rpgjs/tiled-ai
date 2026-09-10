@@ -17,7 +17,7 @@ node dist/cli.mjs init
 node dist/cli.mjs install --extensions "$HOME/.config/tiled/extensions"
 ```
 
-Use the extensions directory shown in Tiled's preferences on other systems or custom installations. Installation copies the extension and its local configuration. The CLI generates a private local secret; never commit this configuration.
+That path is the Linux default. On Windows the directory is `%LOCALAPPDATA%\Tiled\extensions`, independent of where Tiled itself was installed. Use the extensions directory shown in Tiled's preferences on other systems or custom installations. Installation copies the extension and its local configuration. The CLI generates a private local secret; never commit this configuration.
 
 Configure your MCP client with an absolute path, adapting this example to its configuration format:
 

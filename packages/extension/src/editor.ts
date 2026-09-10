@@ -582,12 +582,15 @@ export class Editor {
   private openTileset(path: string) {
     if (!FileInfo.isAbsolutePath(path) || !path.toLowerCase().endsWith(".tsx"))
       fail("INVALID_DESTINATION", "Use an absolute TSX path");
-    const a = tiled.open(path);
+    // Open the cleaned path and report Tiled's own, as openMap does. A map
+    // that later resolves a relative link to this file must reach the same
+    // Tileset instance, or its Wang sets and tileset ID no longer resolve.
+    const a = tiled.open(FileInfo.cleanPath(path));
     if (!a || !a.isTileset) fail("OPEN_FAILED", "Could not open the tileset");
     return {
       documentId: this.docId(a!),
       tilesetId: this.setId(a as Tileset),
-      filePath: path,
+      filePath: a!.fileName,
       documentOpened: true,
     };
   }
