@@ -81,36 +81,24 @@ const lockPath = shared
   : null;
 async function acquireLock() {
   await mkdir(dirname(lockPath), { recursive: true });
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      const file = await open(lockPath, "wx");
-      try {
-        await file.writeFile(String(process.pid));
-      } finally {
-        await file.close();
-      }
-      return;
-    } catch (e) {
-      if (e.code !== "EEXIST") throw e;
-    }
-    const pid = Number(
-      (await readFile(lockPath, "utf8").catch(() => "")).trim(),
+  let file;
+  try {
+    file = await open(lockPath, "wx");
+  } catch (e) {
+    if (e.code !== "EEXIST") throw e;
+    // Never recover automatically: two runs could both judge the owner dead,
+    // and one would then delete the other's fresh lock. Leave it to a person,
+    // as with leftover extension files.
+    const owner = (await readFile(lockPath, "utf8").catch(() => "")).trim();
+    throw Error(
+      `${lockPath} exists, written by pid ${owner || "unknown"}. If no test run is active, delete it and rerun.`,
     );
-    let alive = false;
-    if (pid)
-      try {
-        process.kill(pid, 0);
-        alive = true;
-      } catch (e) {
-        alive = e.code === "EPERM";
-      }
-    if (alive)
-      throw Error(
-        `Another test run (pid ${pid}) holds ${lockPath}; wait for it to finish`,
-      );
-    await rm(lockPath, { force: true }); // left by a run that no longer exists
   }
-  throw Error("Could not acquire " + lockPath);
+  try {
+    await file.writeFile(String(process.pid));
+  } finally {
+    await file.close();
+  }
 }
 function refuseRunningTiled() {
   const image = basename(app).toLowerCase().endsWith(".exe")
@@ -121,7 +109,15 @@ function refuseRunningTiled() {
     ["/FI", `IMAGENAME eq ${image}`, "/NH", "/FO", "CSV"],
     { encoding: "utf8" },
   );
-  if ((list.stdout ?? "").toLowerCase().includes(image.toLowerCase()))
+  // Fail closed: an unavailable process check must not read as "not running".
+  if (list.error || list.status !== 0)
+    throw Error(
+      "Could not check for a running Tiled with tasklist: " +
+        (
+          list.error?.message ?? `exit ${list.status} ${list.stderr ?? ""}`
+        ).trim(),
+    );
+  if (list.stdout.toLowerCase().includes(image.toLowerCase()))
     throw Error(
       `${image} is already running and would load this test's extension copies as soon as they are written. Close Tiled and rerun.`,
     );
