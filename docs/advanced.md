@@ -6,7 +6,7 @@ Manual setup, tool contracts, architecture, limits and development checks.
 
 ## Manual installation
 
-Requires Node.js 24 and Tiled 1.12.2. Tested on Linux with the Tiled AppImage. Windows and macOS have not been validated.
+Requires Node.js 24+ and Tiled 1.12.2 on macOS or Linux. Native Windows transport is disabled with an explicit error; the alternative is to run Node, the MCP stdio server, and Linux Tiled together inside WSL with WSLg. Do not mix native Windows Tiled with a WSL bridge. Linux/WSL validation of the new transport remains outstanding.
 
 ```sh
 git clone https://github.com/rpgjs/tiled-ai.git
@@ -17,7 +17,7 @@ node dist/cli.mjs init
 node dist/cli.mjs install --extensions "$HOME/.config/tiled/extensions"
 ```
 
-That path is the Linux default. On Windows the directory is `%LOCALAPPDATA%\Tiled\extensions`, independent of where Tiled itself was installed. Use the extensions directory shown in Tiled's preferences on other systems or custom installations. Installation copies the extension and its local configuration. The CLI generates a private local secret; never commit this configuration.
+That path is the Linux default. Use the extensions directory shown in Tiled's preferences on macOS or custom installations. Installation copies the extension and its local configuration. The configuration records an absolute Node executable, the checkout's `dist/relay.mjs`, and a private Unix socket path. Keep that checkout and Node installation available; reinstall the extension after moving either. No reusable bridge secret is generated.
 
 Configure your MCP client with an absolute path, adapting this example to its configuration format:
 
@@ -36,13 +36,27 @@ Start the MCP client and Tiled, open a map and select an area. Use **Map → Til
 
 Try: “Inspect the tilesets and build a house in the selected area, with a path to the door and collisions.” The client model must support images to choose tiles visually.
 
-`node dist/cli.mjs doctor` shows local configuration paths and the port. Commands accept `--config /path/to/config.json`. To change the port, edit the local configuration and reinstall the extension using that same configuration. A shared background bridge owns the port. Each Codex task starts a lightweight stdio client that connects to that same bridge; multiple Tiled instances retain separate editor sessions.
+`node dist/cli.mjs doctor` shows the local configuration and private socket paths. Commands accept `--config /path/to/config.json`. `init` creates a dedicated mode-0700 directory under the user's home (named `.tiled-ai-*`); the bridge creates its mode-0600 socket inside. The directory persists across restarts. Each MCP stdio client connects to that same bridge; multiple Tiled instances retain separate editor sessions. Keep the socket path under 100 UTF-8 bytes. Configured paths must be canonical and free of symlinks, with trusted ancestors.
+
+### Migrating a TCP installation
+
+Save work, disconnect/close Tiled, stop existing MCP clients, and terminate the **known old bridge** by its identified PID. Do not use the old `bridge-stop` against an unverified TCP listener: it sends the old bearer credential. New CLI commands and the new extension reject old configurations without contacting that endpoint.
+
+Then rebuild and run:
+
+```sh
+node dist/cli.mjs init --migrate --config /path/to/config.json
+node dist/cli.mjs install --config /path/to/config.json --extensions /path/to/extensions
+node dist/cli.mjs bridge-start --config /path/to/config.json
+```
+
+Migration explicitly replaces the old `port`/`token` configuration with version 2 private IPC. Reinstall **every** old extension copy, including project-specific copies, before reopening Tiled; an old extension can still disclose its old token. Remove obsolete configuration copies. Old tokens cannot authorize the new bridge. There is no TCP fallback.
 
 ### Multiple Codex tasks and upgrades
 
-`serve` automatically starts one detached `bridge` process when needed. Concurrent clients reuse the authenticated bridge and share its editor sessions, image-import preparation and request deduplication. Closing a Codex task only closes its stdio client, leaving Tiled and other tasks connected. Conflicting edits still require fresh document revisions.
+`serve` automatically starts one detached `bridge` process when needed. Concurrent clients reuse the private bridge and share its editor sessions, image-import preparation and request deduplication. Closing a Codex task only closes its stdio client, leaving Tiled and other tasks connected. Conflicting edits still require fresh document revisions.
 
-Run `node dist/cli.mjs bridge-start` to start or reuse the shared bridge explicitly; it returns promptly. The bridge stays running after the last client exits. To stop it explicitly, run `node dist/cli.mjs bridge-stop` with the same `--config` if customized. Restart the MCP integration to start it again, then reconnect Tiled explicitly. For startup diagnostics, `node dist/cli.mjs bridge` runs the bridge in the foreground when the port is free. No secret is passed on the command line.
+Run `node dist/cli.mjs bridge-start` to start or reuse the shared bridge explicitly; it returns promptly. The bridge stays running after the last client exits. To stop it explicitly, run `node dist/cli.mjs bridge-stop` with the same `--config` if customized. Restart the MCP integration to start it again, then reconnect Tiled explicitly. For startup diagnostics, `node dist/cli.mjs bridge` runs the bridge in the foreground when the socket is absent. No credential or editor payload is passed on the command line.
 
 When upgrading from the original single-client version, stop the old `serve` process that owns the bridge port, rebuild, and restart the MCP integration in Codex. Then use **Tiled AI: Connect**. The new client reports `BRIDGE_INCOMPATIBLE` if an older server or a service with another secret occupies its port. It does not kill that process automatically. After upgrading a running shared bridge, use `bridge-stop` and restart it to load the new code. The existing extension and Codex MCP command remain compatible.
 
@@ -86,7 +100,11 @@ AI clients → separate MCP stdio clients → shared local bridge → .mjs exten
 - `packages/extension`: live documents, validation, editing, rendering and Undo.
 - `packages/server`: MCP server, local bridge, request deduplication and annotated image sheets.
 
-The extension targets ES2016 for Tiled's Qt engine, with small compatibility helpers and no Node runtime in Tiled. Asynchronous `XMLHttpRequest` long polling keeps the editor responsive. The bridge binds to `127.0.0.1`, requires a local secret and rejects browser requests with an `Origin` header. No arbitrary JavaScript or shell execution tool is exposed. Image imports, TSX/TMX creation and explicit saves are file-writing operations.
+The extension targets ES2016 for Tiled's Qt engine. Tiled's [Process API](https://www.mapeditor.org/docs/scripting/classes/Process.html) runs the installed Node relay for each request through anonymous stdin/stdout pipes. The helper carries HTTP over a private Unix socket; no TCP listener is used. Qt deferred callbacks check child completion with waits bounded to 5 ms, rather than blocking for the 20-second long poll. This adds a Node process launch per request. The relay enforces a 40-second network deadline and 32 MiB messages; the extension has a 45-second child deadline. Disconnect kills pending children.
+
+Filesystem access authenticates both peers against other OS users. Every connection validates directory ownership, mode 0700, trusted non-symlink ancestors, and an owned private socket. Health sends no credential. Origin headers and legacy Authorization headers are rejected. A recorded old bearer or HTTP body cannot grant another user access to the protected endpoint. Processes running as the same user, administrators, and changes to filesystem ACLs are outside this isolation boundary. No arbitrary JavaScript or shell execution tool is exposed, but editor/file capabilities remain broad; this is not project filesystem confinement.
+
+Normal shutdown removes the socket. A crash can leave it behind: `BRIDGE_STALE_SOCKET` fails closed, and startup never unlinks an existing endpoint. Stop clients, verify that no bridge owns the endpoint, then manually remove **only the stale socket** and restart. Do not remove the private directory or a live listener. Symlinks, permissive directories and unexpected files are errors, not cleanup targets. `BRIDGE_INCOMPATIBLE` means an unexpected service is responding on the private endpoint; identify it before stopping anything.
 
 Document edits require a session ID, document ID, unique request ID and revision from `get_map_info`. Revisions include live content, selection and Wang definitions. References are checked before starting an Undo macro. Batch references resolve against the initial state; create layers before a batch that uses them. External tilesets have their own document and Undo history.
 
@@ -136,3 +154,9 @@ Real integration tests launch Tiled and an MCP client with isolated configuratio
 The house uses [start.tmx](../examples/rpgjs/start.tmx), [house.tmx](../examples/rpgjs/house.tmx) and the deterministic recipe in `scripts/house.mjs`. The Grass example is generated from its PNG alone; the companion source TSX is read only as an independent test oracle after generation. Generated assets are in [examples/grass](../examples/grass), including the TSX, map, preview and pinned source hashes. See [house attribution](../examples/rpgjs/ATTRIBUTION.md), [Grass attribution](../examples/grass/ATTRIBUTION.md) and the [real Tiled test report](../examples/rpgjs/validation.json).
 
 `npm run check:public` scans distributable files for personal paths, credential patterns and accidentally included runtime files. `.tmp`, dependencies and build outputs are excluded; tracked files are also checked when Git is available. This is a targeted accidental-disclosure check, not a guarantee that all secrets can be recognized. Keep runtime configurations, environment files, logs and private keys out of Git.
+
+### Private IPC verification
+
+`npm run check` includes unsafe-path, impostor TCP, legacy-token, stale/live socket, migration, and shared-MCP lifecycle regressions. `TILED_APPIMAGE=/path/to/Tiled npm run test:ipc:tiled` runs the bundled extension and relay in the real Tiled runtime with temporary configuration. It suppresses only Map-menu registration because `--evaluate` has no Map menu, and uses a dialog to keep Qt's event loop alive. This checks connect, polling/replies, same-session reconnect, and explicit shutdown; it does not establish full GUI editing coverage.
+
+The transport was exercised on macOS with Tiled 1.12.2 and Node 26.10.0. Linux, WSL/WSLg, and an actual second-OS-user connection attempt remain unverified; tests check the ownership/mode enforcement and fail-closed behavior. The pre-existing full editor suite remains available via `npm run test:tiled` on Linux.

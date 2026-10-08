@@ -14,11 +14,11 @@ From the verified checkout, install missing dependencies with `npm ci`, then bui
 
 ## Install the extension
 
-Run `node dist/cli.mjs init` and `node dist/cli.mjs doctor`. Both accept `--config <absolute-path>`; retain any existing custom configuration. Do not print the contents of configuration files containing the secret.
+Run `node dist/cli.mjs init` and `node dist/cli.mjs doctor`. Both accept `--config <absolute-path>`; retain any existing custom configuration. Legacy port/token configurations fail closed. Stop the known old bridge by verified PID and close/disconnect Tiled before `init --migrate`, then reinstall every extension copy. Never probe an unverified TCP port using the old CLI or extension. See `docs/advanced.md` for migration details.
 
-Determine the actual Tiled extension directory from its preferences, existing installation or platform configuration. On a standard Linux installation it is `${XDG_CONFIG_HOME:-$HOME/.config}/tiled/extensions`; on Windows it is `%LOCALAPPDATA%\Tiled\extensions`, which is independent of the Tiled installation directory and is created when Tiled first runs. Do not apply either path to macOS or a custom installation. If the location remains uncertain, ask for the directory shown in Tiled Preferences instead of installing into a guessed location.
+Determine the actual Tiled extension directory from its preferences, existing installation or platform configuration. On a standard Linux installation it is `${XDG_CONFIG_HOME:-$HOME/.config}/tiled/extensions`; native Windows is explicitly unsupported for private IPC. On Windows, run Node and Linux Tiled together inside WSL/WSLg and use Linux paths (not yet validated). Do not apply the Linux path to macOS or a custom installation. If the location remains uncertain, ask for the directory shown in Tiled Preferences instead of installing into a guessed location.
 
-Run `node dist/cli.mjs install --extensions <absolute-extension-directory>` using the same `--config` when customized. This installs only `tiled-ai.mjs` and `tiled-ai.config.json`; it must not remove other extensions. A first install or changed extension requires Tiled to reload the extension. Launch Tiled if it is not running and its executable is known. Do not terminate a running editor with unsaved documents to force a reload. If editor interaction is unavailable, ask the user to restart Tiled and later choose **Map → Tiled AI: Connect**.
+Run `node dist/cli.mjs install --extensions <absolute-extension-directory>` using the same `--config` when customized. This installs only `tiled-ai.mjs` and `tiled-ai.config.json`; it must not remove other extensions. Its configuration points to the current absolute Node executable and checkout `dist/relay.mjs`; reinstall after moving either. A first install or changed extension requires Tiled to reload the extension. Launch Tiled if it is not running and its executable is known. Do not terminate a running editor with unsaved documents to force a reload. If editor interaction is unavailable, ask the user to restart Tiled and later choose **Map → Tiled AI: Connect**.
 
 ## Configure Codex and start the bridge
 
@@ -30,14 +30,14 @@ codex mcp add tiled-ai -- /absolute/path/to/node /absolute/path/to/tiled-ai/dist
 
 For a custom bridge configuration append `--config /absolute/path/to/config.json` after `serve`. If an entry already exists, preserve it when correct; correct only its relevant fields when demonstrably wrong. Do not overwrite the whole Codex configuration or expose other servers' credentials. Use the equivalent configuration mechanism for a different MCP client.
 
-Run `node dist/cli.mjs bridge-start` with the same optional `--config`. This returns promptly, starts the shared background bridge if absent, or reuses the existing authenticated bridge. Do not leave a foreground `serve` command running in a terminal just to keep the bridge alive. Codex starts its own stdio clients.
+Run `node dist/cli.mjs bridge-start` with the same optional `--config`. This returns promptly, starts the shared background bridge if absent, or reuses the existing private bridge. Do not leave a foreground `serve` command running in a terminal just to keep the bridge alive. Codex starts its own stdio clients.
 
-`BRIDGE_INCOMPATIBLE` means the configured port is occupied by an older server, another secret or an incompatible service. Identify the owner before stopping anything. For a known shared bridge that needs an update, `bridge-stop` then `bridge-start` reloads it; Tiled must reconnect afterward. Never kill an arbitrary process merely because it owns the port.
+`BRIDGE_INCOMPATIBLE` means an unexpected service owns the private socket. Identify it before stopping anything. `BRIDGE_STALE_SOCKET` means an endpoint exists but refuses connections: stop clients, verify no bridge is running, and only then remove the stale socket manually. Startup never deletes an existing endpoint. The parent must be an owned mode-0700 directory with trusted, non-symlink ancestors; the socket must be owned and private. Never relax permissions or fall back to TCP. For a known private bridge that needs an update, `bridge-stop` then `bridge-start` reloads it; Tiled must reconnect afterward.
 
 ## Verify each boundary
 
 1. Extension files exist in the verified directory, and Tiled has loaded the **Tiled AI** actions.
-2. `bridge-start` reports the authenticated shared bridge as available.
+2. `bridge-start` reports the private shared bridge as available.
 3. Codex has a `tiled-ai` stdio configuration and the current task actually exposes its tools. Configuration presence or server startup status alone does not prove tool exposure.
 4. Call the discovered `get_editor_state` tool. If it returns no sessions, connect Tiled. If it returns a session, inspect the intended document before editing.
 
