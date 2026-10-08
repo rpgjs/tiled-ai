@@ -2,7 +2,7 @@ import { readFile, writeFile, mkdir, copyFile, chmod } from "node:fs/promises";
 import { dirname, resolve, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { randomBytes } from "node:crypto";
+import { createEndpoint, validateEndpoint, requireUnix } from "./ipc";
 import sharp, { type OverlayOptions } from "sharp";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -20,39 +20,60 @@ const configPath = resolve(
   option("--config") ?? join(homedir(), ".config/tiled-ai/config.json"),
 );
 interface Config {
-  port: number;
-  token: string;
+  version: 2;
+  socketPath: string;
+}
+function parseConfig(text: string): Record<string, unknown> {
+  try {
+    const value: unknown = JSON.parse(text);
+    if (value && typeof value === "object" && !Array.isArray(value))
+      return value as Record<string, unknown>;
+  } catch {
+    /* Never echo JSON parse excerpts that may contain old secrets. */
+  }
+  throw Error(
+    "Invalid configuration JSON; repair the file without sharing its contents.",
+  );
 }
 async function config(): Promise<Config> {
-  const c = JSON.parse(await readFile(configPath, "utf8"));
-  if (
-    !Number.isInteger(c.port) ||
-    c.port < 1024 ||
-    c.port > 65535 ||
-    typeof c.token !== "string" ||
-    c.token.length < 32
-  )
-    throw Error("Invalid configuration");
-  return c;
+  requireUnix();
+  const c = parseConfig(await readFile(configPath, "utf8"));
+  if (c.version !== 2 || typeof c.socketPath !== "string")
+    throw Error(
+      "Legacy or invalid configuration. Stop the old bridge and Tiled, then run init --migrate and install. TCP fallback is disabled.",
+    );
+  await validateEndpoint(c.socketPath);
+  return { version: 2, socketPath: c.socketPath };
 }
 async function init() {
+  requireUnix();
   await mkdir(dirname(configPath), { recursive: true });
+  let existing: string | undefined;
   try {
-    await config();
+    existing = await readFile(configPath, "utf8");
   } catch (e: any) {
     if (e.code !== "ENOENT") throw e;
-    await writeFile(
-      configPath,
-      JSON.stringify(
-        { port: 32123, token: randomBytes(32).toString("hex") },
-        null,
-        2,
-      ) + "\n",
-      { mode: 0o600, flag: "wx" },
-    );
   }
+  if (existing !== undefined) {
+    const old = parseConfig(existing);
+    if (old.version === 2) return config();
+    if (
+      !args.includes("--migrate") ||
+      typeof old.token !== "string" ||
+      !Number.isInteger(old.port)
+    )
+      throw Error(
+        "Legacy or invalid configuration. Stop the old bridge and Tiled, then run init --migrate and install. TCP fallback is disabled.",
+      );
+  }
+  const c: Config = { version: 2, socketPath: await createEndpoint() };
+  await validateEndpoint(c.socketPath);
+  await writeFile(configPath, JSON.stringify(c, null, 2) + "\n", {
+    mode: 0o600,
+    flag: existing === undefined ? "wx" : "w",
+  });
   await chmod(configPath, 0o600);
-  return config();
+  return c;
 }
 async function imageContent(result: any): Promise<any[]> {
   if (Array.isArray(result) && result.length && result[0].png) {
@@ -192,8 +213,10 @@ async function main() {
       join(dest, "tiled-ai.config.json"),
       JSON.stringify(
         {
-          url: "http://127.0.0.1:" + c.port,
-          token: c.token,
+          version: 2,
+          socketPath: c.socketPath,
+          node: process.execPath,
+          relay: join(dirname(fileURLToPath(import.meta.url)), "relay.mjs"),
           autoConnect: true,
         },
         null,
@@ -215,7 +238,7 @@ async function main() {
       JSON.stringify({
         node: process.version,
         config: configPath,
-        bridge: "http://127.0.0.1:" + c.port,
+        bridge: c.socketPath,
         extensionBuild: join(
           dirname(fileURLToPath(import.meta.url)),
           "tiled-ai.mjs",
@@ -225,7 +248,7 @@ async function main() {
     return;
   }
   const c = await config();
-  const shared = new SharedBridge(c.port, c.token);
+  const shared = new SharedBridge(c.socketPath);
   if (command === "bridge-start") {
     await shared.ensure(fileURLToPath(import.meta.url), configPath);
     console.log(JSON.stringify({ started: true, ...(await shared.health()) }));
@@ -237,7 +260,7 @@ async function main() {
     return;
   }
   if (command === "bridge") {
-    const bridge = new Bridge(c.token),
+    const bridge = new Bridge(),
       assets = new AssetTools(bridge);
     bridge.clientCall = (method, input) => assets.call(method, input);
     let closing = false;
@@ -250,12 +273,14 @@ async function main() {
     process.once("SIGTERM", stop);
     process.once("SIGINT", stop);
     try {
-      await bridge.listen(c.port);
+      await bridge.listen(c.socketPath);
     } catch (e: any) {
       if (e.code === "EADDRINUSE") return;
       throw e;
     }
-    console.error("Shared Tiled AI bridge listening on 127.0.0.1:" + c.port);
+    console.error(
+      "Shared Tiled AI bridge listening on private socket " + c.socketPath,
+    );
     return;
   }
   if (command !== "serve")
@@ -309,7 +334,8 @@ async function main() {
   });
   await server.connect(new StdioServerTransport());
   console.error(
-    "MCP client connected to shared Tiled AI bridge on 127.0.0.1:" + c.port,
+    "MCP client connected to shared Tiled AI bridge on private socket " +
+      c.socketPath,
   );
 }
 main().catch((e) => {

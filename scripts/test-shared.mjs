@@ -1,32 +1,21 @@
 import { execFileSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { createServer } from "node:net";
+import { createEndpoint, ipcPost } from "../dist/ipc.mjs";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { dirname, join, resolve } from "node:path";
+import { randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
-const socket = createServer();
-await new Promise((r) => socket.listen(0, "127.0.0.1", r));
-const port = socket.address().port;
-await new Promise((r) => socket.close(r));
 const root = await mkdtemp(join(tmpdir(), "tiled-shared-")),
   config = join(root, "config.json"),
-  token = randomBytes(32).toString("hex");
-await writeFile(config, JSON.stringify({ port, token }));
+  socketPath = await createEndpoint("/tmp");
+await writeFile(config, JSON.stringify({ version: 2, socketPath }));
 const clients = [];
 let running = true,
   pollLoop,
   mutations = 0;
-const post = async (path, body) => {
-  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
-    method: "POST",
-    headers: { authorization: "Bearer " + token },
-    body: JSON.stringify(body),
-  });
-  return res.json();
-};
+const post = async (path, body) => (await ipcPost(socketPath, path, body)).body;
 async function start() {
   const c = new Client({ name: "shared-test", version: "1" });
   clients.push(c);
@@ -130,5 +119,6 @@ try {
   await Promise.allSettled(clients.map((c) => c.close()));
   await post("/stop", {}).catch(() => {});
   await pollLoop;
+  await rm(dirname(socketPath), { recursive: true, force: true });
   await rm(root, { recursive: true, force: true });
 }

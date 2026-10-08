@@ -6,24 +6,18 @@ import {
   RpcError,
   type RpcResult,
 } from "../../protocol/src/index";
-declare class XMLHttpRequest {
-  readyState: number;
-  status: number;
-  responseText: string;
-  onreadystatechange: () => void;
-  open(method: string, url: string, async: boolean): void;
-  setRequestHeader(name: string, value: string): void;
-  send(body?: string): void;
-  abort(): void;
-}
+// Qt.callLater is provided by the QQmlEngine used by Tiled.
+declare const Qt: { callLater(callback: () => void): void };
 const extensionFile = __filename;
 // The installer writes the configuration next to the extension, named after
 // it. Deriving the name keeps a differently named copy reading its own
-// configuration instead of an unrelated installation's secret.
+// configuration instead of an unrelated installation's endpoint.
 const configFile = extensionFile.replace(/\.m?js$/, ".config.json");
 interface Config {
-  url: string;
-  token: string;
+  version: 2;
+  socketPath: string;
+  node: string;
+  relay: string;
   autoConnect?: boolean;
 }
 let connected = false,
@@ -31,41 +25,76 @@ let connected = false,
   sessionId = "",
   editor: Editor | undefined;
 let config: Config;
-const pending = new Set<XMLHttpRequest>();
+const pending = new Set<Process>();
 let generation = 0;
 const cache = new Map<string, { signature: string; result: RpcResult }>();
 function disconnect() {
   connected = false;
   generation++;
-  for (const r of pending) r.abort();
+  for (const r of pending) {
+    r.kill();
+    r.close();
+  }
   pending.clear();
   status = "Disconnected";
 }
 function request(path: string, body: unknown, done: (value: any) => void) {
   const g = generation,
-    r = new XMLHttpRequest();
-  pending.add(r);
-  r.open("POST", config.url + path, true);
-  r.setRequestHeader("Authorization", "Bearer " + config.token);
-  r.setRequestHeader("Content-Type", "application/json");
-  r.onreadystatechange = () => {
-    if (r.readyState !== 4 || g !== generation) return;
-    pending.delete(r);
-    if (r.status !== 200) {
-      disconnect();
-      status = "Connection lost: HTTP " + r.status;
-      tiled.log("Tiled AI: " + status);
+    child = new Process();
+  child.codec = "UTF-8";
+  pending.add(child);
+  const fail = () => {
+    disconnect();
+    status =
+      "Private bridge request failed. Check the bridge, then reconnect; inspect request status before retrying edits.";
+    tiled.log("Tiled AI: " + status);
+  };
+  try {
+    if (!child.start(config.node, [config.relay, config.socketPath, path])) {
+      fail();
+      return;
+    }
+    child.write(JSON.stringify(body));
+    child.closeWriteChannel();
+  } catch {
+    fail();
+    return;
+  }
+  const deadline = Date.now() + 45000;
+  let output = "";
+  function check() {
+    if (g !== generation) return;
+    // Process exposes no completion signal. Yield to Qt between bounded 5ms
+    // checks; never wait for the bridge's long poll on the editor thread.
+    const finished = child.waitForFinished(5);
+    output += child.readStdOut();
+    if (output.length > 32 * 1024 * 1024 || Date.now() > deadline) {
+      fail();
+      return;
+    }
+    if (!finished && !output.endsWith("\n")) {
+      Qt.callLater(check);
+      return;
+    }
+    const code = child.exitCode;
+    pending.delete(child);
+    child.close();
+    if (code !== 0) {
+      fail();
       return;
     }
     try {
-      done(JSON.parse(r.responseText));
-    } catch (e) {
-      disconnect();
-      status = String(e);
-      tiled.log("Tiled AI: " + status);
+      const response = JSON.parse(output);
+      if (response.status !== 200) {
+        fail();
+        return;
+      }
+      done(response.body);
+    } catch {
+      fail();
     }
-  };
-  r.send(JSON.stringify(body));
+  }
+  Qt.callLater(check);
 }
 function poll() {
   if (!connected) return;
@@ -135,10 +164,17 @@ function connect() {
       f.close();
     }
     if (
-      !/^http:\/\/127\.0\.0\.1:\d+$/.test(config.url) ||
-      config.token.length < 32
+      config.version !== 2 ||
+      typeof config.socketPath !== "string" ||
+      !config.socketPath.startsWith("/") ||
+      typeof config.node !== "string" ||
+      !config.node.startsWith("/") ||
+      typeof config.relay !== "string" ||
+      !config.relay.startsWith("/")
     )
-      throw Error("Invalid local bridge configuration");
+      throw Error(
+        "Legacy or invalid configuration. Re-run CLI install for private IPC; TCP is disabled.",
+      );
     status = "Connecting";
     request(
       "/connect",
@@ -160,7 +196,8 @@ function connect() {
       },
     );
   } catch (e) {
-    status = String(e);
+    status =
+      "Legacy or invalid configuration. Re-run CLI install for private IPC; TCP is disabled.";
     tiled.log("Tiled AI: " + status);
   }
 }

@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   VERSION,
   toolSchemas,
@@ -7,6 +7,8 @@ import {
   RpcError,
   type RpcResult,
 } from "../../protocol/src/index";
+import { chmod } from "node:fs/promises";
+import { validateEndpoint } from "./ipc";
 interface Entry {
   signature: string;
   command: unknown;
@@ -28,10 +30,7 @@ export class Bridge {
   onStop?: () => void;
   readonly sessions = new Map<string, Session>();
   readonly server: http.Server;
-  constructor(
-    private token: string,
-    private timeoutMs = 30000,
-  ) {
+  constructor(private timeoutMs = 30000) {
     this.server = http.createServer((req, res) => {
       this.route(req, res).catch((e) => {
         if (!res.headersSent) this.send(res, 400, { error: String(e) });
@@ -39,17 +38,31 @@ export class Bridge {
       });
     });
   }
-  async listen(port: number) {
+  async listen(socketPath: string) {
+    if (await validateEndpoint(socketPath))
+      throw Object.assign(
+        Error(
+          "IPC endpoint already exists; never replace a live or stale socket automatically",
+        ),
+        { code: "EADDRINUSE" },
+      );
+    // Directory permissions already exclude every other user during bind/chmod.
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
-      this.server.listen(port, "127.0.0.1", () => resolve());
+      const mask = process.umask(0o177);
+      try {
+        this.server.listen(socketPath, () => resolve());
+      } finally {
+        process.umask(mask);
+      }
     });
-    return (this.server.address() as { port: number }).port;
+    await chmod(socketPath, 0o600);
+    return socketPath;
   }
   async close() {
     for (const s of this.sessions.values()) {
       clearTimeout(s.pollTimer);
-      s.poll?.end();
+      if (s.poll) this.send(s.poll, 200, {});
       for (const e of s.entries.values())
         e.waiters.splice(0).forEach((f) =>
           f({
@@ -71,16 +84,10 @@ export class Bridge {
     res.end(JSON.stringify(value));
   }
   private async route(req: http.IncomingMessage, res: http.ServerResponse) {
-    const auth = Buffer.from(req.headers.authorization ?? ""),
-      expected = Buffer.from("Bearer " + this.token);
     if (
       req.method !== "POST" ||
       req.headers.origin ||
-      !["127.0.0.1", "::ffff:127.0.0.1"].includes(
-        req.socket.remoteAddress ?? "",
-      ) ||
-      auth.length !== expected.length ||
-      !timingSafeEqual(auth, expected)
+      req.headers.authorization
     ) {
       this.send(res, 403, { error: "Forbidden" });
       return;
@@ -99,7 +106,7 @@ export class Bridge {
     if (req.url === "/health" && this.clientCall) {
       this.send(res, 200, {
         service: "tiled-ai-shared-bridge",
-        version: 1,
+        version: 2,
         pid: process.pid,
       });
       return;
