@@ -17,7 +17,8 @@
     "check:public": "node scripts/check-public.mjs",
     "test:terrain": "node scripts/test-tiled.mjs --terrain",
     "demo:grass:assets": "node scripts/demo-grass-assets.mjs",
-    "test:shared": "npm run build && node scripts/test-shared.mjs"
+    "test:shared": "npm run build && node scripts/test-shared.mjs",
+    "test:ipc:tiled": "npm run build && node scripts/test-ipc-tiled.mjs"
   },
   "devDependencies": {
     "@mapeditor/tiled-api": "^1.12.0",
