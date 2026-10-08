@@ -10,7 +10,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
-    "check": "npm run typecheck && npm test && npm run build && node scripts/test-shared.mjs && npm run check:public",
+    "check": "npm run typecheck && npm test && npm run build && node scripts/test-shared.mjs && node scripts/test-config.mjs && npm run check:public",
     "demo:assets": "node scripts/demo-assets.mjs",
     "test:tiled": "node scripts/test-tiled.mjs",
     "format:check": "prettier --check \"packages/**/*.ts\" \"scripts/*.mjs\" \"tests/*.ts\"",
