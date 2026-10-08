@@ -20,3 +20,21 @@ await build({
   banner: { js: "#!/usr/bin/env node" },
 });
 await chmod("dist/cli.mjs", 0o755);
+
+await build({
+  entryPoints: ["packages/server/src/relay.ts"],
+  outfile: "dist/relay.mjs",
+  bundle: true,
+  format: "esm",
+  platform: "node",
+  target: "node24",
+});
+
+await build({
+  entryPoints: ["packages/server/src/ipc.ts"],
+  outfile: "dist/ipc.mjs",
+  bundle: true,
+  format: "esm",
+  platform: "node",
+  target: "node24",
+});

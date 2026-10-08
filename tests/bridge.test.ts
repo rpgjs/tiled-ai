@@ -1,27 +1,27 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Bridge } from "../packages/server/src/bridge";
-const token = "0123456789abcdef0123456789abcdef";
+import { createEndpoint, ipcPost } from "../packages/server/src/ipc";
+import { rm } from "node:fs/promises";
+import { dirname } from "node:path";
 async function fixture(timeout = 1000) {
-  const bridge = new Bridge(token, timeout),
-    port = await bridge.listen(0);
+  const bridge = new Bridge(timeout),
+    socketPath = await createEndpoint("/tmp");
+  await bridge.listen(socketPath);
+  const close = bridge.close.bind(bridge);
+  bridge.close = async () => {
+    await close();
+    await rm(dirname(socketPath), { recursive: true, force: true });
+  };
   const post = async (
     path: string,
     body: unknown,
     headers: Record<string, string> = {},
-  ) =>
-    fetch(`http://127.0.0.1:${port}` + path, {
-      method: "POST",
-      headers: {
-        authorization: "Bearer " + token,
-        "Content-Type": "application/json",
-        ...headers,
-      },
-      body: JSON.stringify(body),
-    });
-  const connected = (await (
-    await post("/connect", { version: 1 })
-  ).json()) as any;
+  ) => {
+    const response = await ipcPost(socketPath, path, body, 40000, headers);
+    return { status: response.status, json: async () => response.body };
+  };
+  const connected = await (await post("/connect", { version: 1 })).json();
   return { bridge, post, sessionId: connected.sessionId };
 }
 const mutation = (sessionId: string) => ({
@@ -37,7 +37,7 @@ const mutation = (sessionId: string) => ({
     },
   ],
 });
-test("local bridge rejects invalid tokens, browser origins and protocol versions", async () => {
+test("private bridge rejects legacy authorization, browser origins and protocol versions", async () => {
   const f = await fixture();
   try {
     assert.equal(

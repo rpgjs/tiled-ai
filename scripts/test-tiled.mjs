@@ -9,12 +9,17 @@ import {
 import { resolve, join, basename, dirname } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:http";
+import { createEndpoint } from "../dist/ipc.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 import sharp from "sharp";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 const app = process.env.TILED_APPIMAGE || "tiled";
+if (process.platform === "win32")
+  throw Error(
+    "Native Windows IPC is disabled; run this test with Linux Tiled inside WSL.",
+  );
 const probe = spawnSync(app, ["--version"], { encoding: "utf8" });
 if (probe.error || probe.status !== 0)
   throw Error(
@@ -141,12 +146,9 @@ async function refuseForeignExtensions() {
     );
 }
 const token = randomBytes(32).toString("hex");
-const portProbe = createServer();
-await new Promise((r) => portProbe.listen(0, "127.0.0.1", r));
-const port = portProbe.address().port;
-await new Promise((r) => portProbe.close(r));
+const socketPath = await createEndpoint("/tmp");
 const config = join(root, "bridge.json");
-await writeFile(config, JSON.stringify({ port, token }));
+await writeFile(config, JSON.stringify({ version: 2, socketPath }));
 const width = 32,
   height = 24,
   base = resolve("examples/rpgjs/base.tsx");
@@ -275,8 +277,10 @@ try {
   await writeExclusive(
     installed[1],
     JSON.stringify({
-      url: `http://127.0.0.1:${port}`,
-      token,
+      version: 2,
+      socketPath,
+      node: process.execPath,
+      relay: resolve("dist/relay.mjs"),
       autoConnect: true,
     }),
   );
@@ -773,6 +777,7 @@ try {
     // Remove only what this run created, even if the teardown above failed.
     for (const path of createdFiles) await rm(path, { force: true });
     if (lockPath) await rm(lockPath, { force: true });
+    await rm(dirname(socketPath), { recursive: true, force: true });
     await writeFile(join(root, "run.log"), logs);
   }
 }

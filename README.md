@@ -27,7 +27,7 @@ You keep a normal Tiled project: editable layers, tiles, objects and properties.
 
 ## Get started with your AI
 
-You need **Tiled 1.12.2**, **Node.js 24+**, and an AI client with MCP and image support. The demo uses Codex; another compatible MCP client can use the same server. Local validation has been performed on Linux; Windows and macOS are not yet tested.
+You need **Tiled 1.12.2**, **Node.js 24+**, and an AI client with MCP and image support. The demo uses Codex; another compatible MCP client can use the same server. The private IPC transport targets macOS/Linux. Native Windows is disabled; run both Node and Linux Tiled inside WSL/WSLg instead (not yet validated). See [transport setup and migration](docs/advanced.md#migrating-a-tcp-installation).
 
 **1. Install the companion skill**
 
