@@ -46,6 +46,7 @@ const post = async (path, body) => {
       "x-tiled-ai-client": session.cn,
       "x-tiled-ai-server": session.sn,
       "x-tiled-ai-seq": String(seq),
+      "x-tiled-ai-body": digest,
       "x-tiled-ai-mac": hmac(
         session.key,
         ["tiled-ai v2", "request", seq, "POST", path, digest].join("\n"),

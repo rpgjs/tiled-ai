@@ -6,7 +6,7 @@ import {
   RpcError,
   type RpcResult,
 } from "../../protocol/src/index";
-import { ClientChannel, pureCrypto, weakNonce } from "../../protocol/src/auth";
+import { ClientChannel, pureCrypto, keyedNonce } from "../../protocol/src/auth";
 declare class XMLHttpRequest {
   readyState: number;
   status: number;
@@ -48,7 +48,7 @@ function fail(message: string) {
 // The server must prove it knows the secret before any request is signed; the
 // secret itself never leaves this process.
 function handshake(g: number, done: (c: ClientChannel) => void) {
-  const clientNonce = weakNonce(pureCrypto),
+  const clientNonce = keyedNonce(pureCrypto, config.token),
     r = new XMLHttpRequest();
   pending.add(r);
   r.open("POST", config.url + "/handshake", true);

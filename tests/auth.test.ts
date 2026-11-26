@@ -4,15 +4,15 @@ import { createHash, createHmac } from "node:crypto";
 import { Bridge } from "../packages/server/src/bridge";
 import { BridgeChannel } from "../packages/server/src/channel";
 import { SharedBridge } from "../packages/server/src/shared";
-import { ServerAuth, nodeCrypto } from "../packages/server/src/auth";
+import { ServerAuth } from "../packages/server/src/auth";
 import { hmacSha256Hex, sha256Hex } from "../packages/protocol/src/sha256";
 import {
   ClientChannel,
   HEADERS,
-  weakNonce,
+  keyedNonce,
   pureCrypto,
 } from "../packages/protocol/src/auth";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 const token = "0123456789abcdef0123456789abcdef";
 test("pure SHA-256/HMAC match node:crypto, including UTF-8 and block boundaries", () => {
   const samples = [
@@ -25,6 +25,7 @@ test("pure SHA-256/HMAC match node:crypto, including UTF-8 and block boundaries"
     "a".repeat(65),
     "é€😀 mixed",
     "lone \ud800 surrogate",
+    "a".repeat(70) + "é" + "b".repeat(100) + "\udc00",
     JSON.stringify({ nested: { list: [1, 2, 3], text: "x".repeat(1000) } }),
     "z".repeat(100_000),
   ];
@@ -56,7 +57,7 @@ const hello = (port: number, clientNonce: string) =>
 test("the extension-side client and the server agree through a real handshake and signed request", async () => {
   const { bridge, port } = await fixture();
   try {
-    const cn = weakNonce(pureCrypto);
+    const cn = keyedNonce(pureCrypto, token);
     const channel = ClientChannel.accept(
       pureCrypto,
       token,
@@ -112,7 +113,7 @@ test("wrong secrets fail on both sides", async () => {
       { code: "BRIDGE_INCOMPATIBLE" },
     );
     // A forged client with the right handshake but the wrong key is denied.
-    const cn = weakNonce(pureCrypto),
+    const cn = keyedNonce(pureCrypto, token),
       server = await hello(port, cn);
     const forged = ClientChannel.accept(
       { ...pureCrypto, hmac: (_k, m) => pureCrypto.hmac("wrong", m) },
@@ -139,7 +140,7 @@ test("wrong secrets fail on both sides", async () => {
 test("replays, tampered bodies and altered paths are denied", async () => {
   const { bridge, port } = await fixture();
   try {
-    const cn = weakNonce(pureCrypto);
+    const cn = keyedNonce(pureCrypto, token);
     const channel = ClientChannel.accept(
       pureCrypto,
       token,
@@ -198,7 +199,7 @@ test("channels survive reuse but a restarted bridge forces a fresh handshake", a
 test("server channels expire after the handshake window and idle time", () => {
   let now = 1_000_000;
   const auth = new ServerAuth(token, () => now);
-  const cn = weakNonce(pureCrypto);
+  const cn = keyedNonce(pureCrypto, token);
   const channel = ClientChannel.accept(
     pureCrypto,
     token,
@@ -207,7 +208,7 @@ test("server channels expire after the handshake window and idle time", () => {
   )!;
   const verify = (seqBody = "{}") => {
     const h = channel.sign("POST", "/p", seqBody);
-    return auth.verify("POST", "/p", seqBody, (n) => h[n]);
+    return auth.verify("POST", "/p", (n) => h[n]);
   };
   assert.equal(verify(), "ok");
   now += 14 * 60_000;
@@ -218,10 +219,79 @@ test("server channels expire after the handshake window and idle time", () => {
   now += 61_000;
   const h = late.sign("POST", "/p", "{}");
   assert.equal(
-    auth.verify("POST", "/p", "{}", (n) => h[n]),
+    auth.verify("POST", "/p", (n) => h[n]),
     "expired",
     "unused handshake",
   );
   assert.equal(auth.handshake("not-a-nonce"), undefined);
-  void nodeCrypto;
+});
+test("the extension nonce is keyed by the secret and never repeats", () => {
+  const { now } = Date,
+    { random } = Math;
+  Date.now = () => 1;
+  Math.random = () => 0.5;
+  try {
+    // With a frozen clock and a predictable Math.random, only the secret and
+    // the counter vary: an attacker without the secret cannot predict it.
+    const a = keyedNonce(pureCrypto, token),
+      b = keyedNonce(pureCrypto, token),
+      other = keyedNonce(pureCrypto, "f".repeat(32));
+    assert.match(a, /^[0-9a-f]{32}$/);
+    assert.notEqual(a, b);
+    assert.notEqual(b, other);
+  } finally {
+    Date.now = now;
+    Math.random = random;
+  }
+});
+test("unauthenticated requests are rejected before their body is read", async () => {
+  const { bridge, port } = await fixture();
+  try {
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request(
+        {
+          port,
+          host: "127.0.0.1",
+          method: "POST",
+          path: "/connect",
+          headers: {
+            "x-tiled-ai-client": "0".repeat(32),
+            "x-tiled-ai-server": "1.2.3",
+            "x-tiled-ai-seq": "1",
+            "x-tiled-ai-body": "0".repeat(64),
+            "x-tiled-ai-mac": "0".repeat(64),
+            "content-length": String(32 * 1024 * 1024),
+          },
+        },
+        (res) => {
+          resolve(res.statusCode!);
+          req.destroy();
+        },
+      );
+      req.on("error", (e: any) => {
+        if (e.code !== "ECONNRESET") reject(e);
+      });
+      // Announce 32 MiB but send one chunk: the answer must not wait for more.
+      req.write("x".repeat(1024));
+    });
+    assert.equal(status, 403);
+  } finally {
+    await bridge.close();
+  }
+});
+test("an older bridge without the handshake gets a specific upgrade message", async () => {
+  const old = createServer((_req, res) => {
+    res.statusCode = 403;
+    res.end(JSON.stringify({ error: "Forbidden" }));
+  });
+  await new Promise<void>((r) => old.listen(0, "127.0.0.1", () => r()));
+  const port = (old.address() as { port: number }).port;
+  try {
+    await assert.rejects(() => new SharedBridge(port, token).stop(), {
+      code: "BRIDGE_INCOMPATIBLE",
+      message: /older Tiled AI bridge.*stop it by PID/,
+    });
+  } finally {
+    old.close();
+  }
 });

@@ -1,5 +1,6 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { HEADERS } from "../../protocol/src/auth";
 import { ServerAuth } from "./auth";
 import {
   VERSION,
@@ -86,10 +87,24 @@ export class Bridge {
       return;
     }
     const handshake = req.url === "/handshake";
-    // The secret is never accepted or sent. Reject before buffering a body
-    // when the request cannot possibly carry a MAC.
-    if (!handshake && !req.headers["x-tiled-ai-mac"]) {
-      this.send(res, 403, { error: "Forbidden" });
+    const header = (name: string) => {
+      const v = req.headers[name];
+      return Array.isArray(v) ? v[0] : v;
+    };
+    // Authenticate from headers before buffering anything, so a caller without
+    // the secret cannot make the bridge hold large bodies. The secret itself is
+    // never accepted or sent.
+    const verdict = handshake
+      ? "ok"
+      : this.auth.verify(req.method, req.url ?? "", header);
+    if (verdict !== "ok") {
+      this.send(
+        res,
+        verdict === "expired" ? 401 : 403,
+        verdict === "expired"
+          ? { error: "CHANNEL_EXPIRED" }
+          : { error: "Forbidden" },
+      );
       return;
     }
     let size = 0;
@@ -102,29 +117,17 @@ export class Bridge {
       }
       chunks.push(part);
     }
-    const text = Buffer.concat(chunks).toString();
+    const raw = Buffer.concat(chunks),
+      text = raw.toString();
     if (handshake) {
       const hello = this.auth.handshake(JSON.parse(text).clientNonce);
       this.send(res, hello ? 200 : 400, hello ?? { error: "Invalid nonce" });
       return;
     }
-    const verdict = this.auth.verify(
-      req.method,
-      req.url ?? "",
-      text,
-      (name) => {
-        const v = req.headers[name];
-        return Array.isArray(v) ? v[0] : v;
-      },
-    );
-    if (verdict !== "ok") {
-      this.send(
-        res,
-        verdict === "expired" ? 401 : 403,
-        verdict === "expired"
-          ? { error: "CHANNEL_EXPIRED" }
-          : { error: "Forbidden" },
-      );
+    if (
+      createHash("sha256").update(raw).digest("hex") !== header(HEADERS.body)
+    ) {
+      this.send(res, 403, { error: "Forbidden" });
       return;
     }
     const body = JSON.parse(text);

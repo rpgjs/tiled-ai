@@ -32,7 +32,7 @@ For a custom bridge configuration append `--config /absolute/path/to/config.json
 
 Run `node dist/cli.mjs bridge-start` with the same optional `--config`. This returns promptly, starts the shared background bridge if absent, or reuses the existing authenticated bridge. Do not leave a foreground `serve` command running in a terminal just to keep the bridge alive. Codex starts its own stdio clients.
 
-`BRIDGE_INCOMPATIBLE` means the configured port is occupied by an older server, another secret, an impostor or an incompatible service (it failed the secret-proof handshake; nothing was sent to it). After upgrading, rerun `install` so Tiled gets the version 2 extension. Identify the owner before stopping anything. For a known shared bridge that needs an update, `bridge-stop` then `bridge-start` reloads it; Tiled must reconnect afterward. Never kill an arbitrary process merely because it owns the port.
+`BRIDGE_INCOMPATIBLE` means the configured port is occupied by an older server, another secret, an impostor or an incompatible service (it failed the secret-proof handshake; nothing was sent to it). If the message names an older bridge, `bridge-stop` cannot stop it: confirm the process on the port is the old Tiled AI bridge and stop it by PID. After upgrading, rerun `install` so Tiled gets the version 2 extension. Identify the owner before stopping anything. For a known shared bridge that needs an update, `bridge-stop` then `bridge-start` reloads it; Tiled must reconnect afterward. Never kill an arbitrary process merely because it owns the port.
 
 ## Verify each boundary
 

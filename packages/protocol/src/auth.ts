@@ -16,9 +16,11 @@ export const HEADERS = {
   client: "x-tiled-ai-client",
   server: "x-tiled-ai-server",
   seq: "x-tiled-ai-seq",
+  body: "x-tiled-ai-body",
   mac: "x-tiled-ai-mac",
 } as const;
 export const NONCE_PATTERN = /^[0-9a-f]{32}$/;
+export const DIGEST_PATTERN = /^[0-9a-f]{64}$/;
 export function serverProof(
   c: Crypto,
   token: string,
@@ -47,11 +49,13 @@ export function requestMac(
   seq: number,
   method: string,
   path: string,
-  body: string,
+  bodyDigest: string,
 ) {
+  // The body is covered through its digest, sent as a header, so the server
+  // can authenticate a request before buffering its body.
   return c.hmac(
     key,
-    [AUTH_VERSION, "request", seq, method, path, c.sha256(body)].join("\n"),
+    [AUTH_VERSION, "request", seq, method, path, bodyDigest].join("\n"),
   );
 }
 // Not constant-time in the engine's JIT, but the compared proof is a fresh
@@ -62,12 +66,15 @@ export function sameHex(a: string, b: string) {
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
-// Weak engines lack a CSPRNG. The nonce only has to be unpredictable enough
-// that an impostor cannot replay a proof recorded for the same value.
-export function weakNonce(c: Crypto) {
-  let seed = String(Date.now());
-  for (let i = 0; i < 16; i++) seed += ":" + Math.random();
-  return c.sha256(seed).slice(0, 32);
+// Tiled's engine has no CSPRNG, and Math.random can be predictable. Keying the
+// nonce with the secret makes it unpredictable to anyone who lacks the secret,
+// so nobody can collect server proofs for future nonces in advance. The clock,
+// counter and Math.random only keep successive nonces distinct.
+let nonceCounter = 0;
+export function keyedNonce(c: Crypto, token: string) {
+  const parts = [AUTH_VERSION, "nonce", Date.now(), ++nonceCounter];
+  for (let i = 0; i < 4; i++) parts.push(Math.random());
+  return c.hmac(token, parts.join("\n")).slice(0, 32);
 }
 export interface HandshakeResponse {
   serverNonce: string;
@@ -105,12 +112,14 @@ export class ClientChannel {
     );
   }
   sign(method: string, path: string, body: string): Record<string, string> {
-    const seq = ++this.seq;
+    const seq = ++this.seq,
+      digest = this.c.sha256(body);
     return {
       [HEADERS.client]: this.clientNonce,
       [HEADERS.server]: this.serverNonce,
       [HEADERS.seq]: String(seq),
-      [HEADERS.mac]: requestMac(this.c, this.key, seq, method, path, body),
+      [HEADERS.body]: digest,
+      [HEADERS.mac]: requestMac(this.c, this.key, seq, method, path, digest),
     };
   }
 }

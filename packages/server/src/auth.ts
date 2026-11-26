@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import {
+  DIGEST_PATTERN,
   HEADERS,
   NONCE_PATTERN,
   requestMac,
@@ -48,15 +49,19 @@ export class ServerAuth {
       proof: serverProof(nodeCrypto, this.token, clientNonce, serverNonce),
     };
   }
+  /**
+   * Authenticates a request from its headers alone. The caller must then
+   * check that the body matches the signed `HEADERS.body` digest.
+   */
   verify(
     method: string,
     path: string,
-    body: string,
     header: (name: string) => string | undefined,
   ): Verdict {
     const cn = header(HEADERS.client),
       sn = header(HEADERS.server),
       seqText = header(HEADERS.seq),
+      digest = header(HEADERS.body),
       mac = header(HEADERS.mac);
     if (
       !cn ||
@@ -65,12 +70,14 @@ export class ServerAuth {
       sn.length > 256 ||
       !seqText ||
       !/^[1-9]\d{0,9}$/.test(seqText) ||
+      !digest ||
+      !DIGEST_PATTERN.test(digest) ||
       !mac
     )
       return "denied";
     const seq = Number(seqText);
     const key = sessionKey(nodeCrypto, this.token, cn, sn);
-    if (!sameHex(mac, requestMac(nodeCrypto, key, seq, method, path, body)))
+    if (!sameHex(mac, requestMac(nodeCrypto, key, seq, method, path, digest)))
       return "denied";
     // The caller knows the secret from here on; failures only mean "redo the
     // handshake", and the request has not been executed.

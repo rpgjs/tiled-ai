@@ -32,12 +32,19 @@ export class BridgeChannel {
     } catch {
       /* Not JSON: treated like any other failed proof. */
     }
-    if (!channel)
+    if (channel) return channel;
+    // A pre-v2 bridge has no /handshake and answers 403/404. It cannot be
+    // stopped remotely: that would mean sending the secret to an unverified
+    // listener, which is exactly what this handshake prevents.
+    if (response.status === 403 || response.status === 404)
       throw new RpcError(
         "BRIDGE_INCOMPATIBLE",
-        "The configured port did not prove knowledge of the bridge secret (older server, another secret, or an impostor). No request was sent. Identify the owner of the port before stopping anything.",
+        `Port ${this.port} is held by a service without the v2 handshake, most likely an older Tiled AI bridge. bridge-stop cannot stop it because it would have to send the secret. Find the process listening on that port, confirm it is the old Tiled AI bridge, stop it by PID, then restart the MCP integration.`,
       );
-    return channel;
+    throw new RpcError(
+      "BRIDGE_INCOMPATIBLE",
+      `The service on port ${this.port} failed to prove knowledge of the bridge secret (another secret or an impostor). Nothing was sent to it. Identify the owner of the port before stopping anything.`,
+    );
   }
   async post(path: string, body: unknown, timeout = 40000): Promise<Response> {
     const text = JSON.stringify(body);
@@ -55,6 +62,7 @@ export class BridgeChannel {
       // An expired channel is rejected before the request runs, so one retry
       // on a fresh channel cannot repeat a mutation.
       if (response.status === 401 && attempt === 0) {
+        await response.body?.cancel();
         this.channel = undefined;
         continue;
       }

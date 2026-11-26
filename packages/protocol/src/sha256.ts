@@ -14,10 +14,13 @@ const K = [
   0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 // Matches Buffer.from(s, "utf8"): lone surrogates become U+FFFD.
-function utf8(s: string): number[] {
-  const out: number[] = [];
+function utf8(s: string, out: { byte(b: number): void }) {
   for (let i = 0; i < s.length; i++) {
     let c = s.charCodeAt(i);
+    if (c < 0x80) {
+      out.byte(c);
+      continue;
+    }
     if (c >= 0xd800 && c < 0xe000) {
       const d = i + 1 < s.length ? s.charCodeAt(i + 1) : 0;
       if (c < 0xdc00 && d >= 0xdc00 && d < 0xe000) {
@@ -25,55 +28,104 @@ function utf8(s: string): number[] {
         i++;
       } else c = 0xfffd;
     }
-    if (c < 0x80) out.push(c);
-    else if (c < 0x800) out.push(0xc0 | (c >> 6), 0x80 | (c & 63));
-    else if (c < 0x10000)
-      out.push(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 63), 0x80 | (c & 63));
-    else
-      out.push(
-        0xf0 | (c >> 18),
-        0x80 | ((c >> 12) & 63),
-        0x80 | ((c >> 6) & 63),
-        0x80 | (c & 63),
-      );
+    if (c < 0x800) out.byte(0xc0 | (c >> 6));
+    else {
+      if (c < 0x10000) out.byte(0xe0 | (c >> 12));
+      else {
+        out.byte(0xf0 | (c >> 18));
+        out.byte(0x80 | ((c >> 12) & 63));
+      }
+      out.byte(0x80 | ((c >> 6) & 63));
+    }
+    out.byte(0x80 | (c & 63));
   }
-  return out;
 }
-function digest(bytes: number[]): number[] {
-  const h = [
-    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
-    0x1f83d9ab, 0x5be0cd19,
-  ];
-  const length = bytes.length;
-  bytes.push(0x80);
-  while (bytes.length % 64 !== 56) bytes.push(0);
-  const bits = length * 8;
-  // Messages stay far below 2^53 bits; the high word is exact.
-  const high = Math.floor(bits / 0x100000000);
-  for (const word of [high, bits >>> 0])
-    bytes.push(
-      word >>> 24,
-      (word >>> 16) & 255,
-      (word >>> 8) & 255,
-      word & 255,
-    );
-  const w = new Array<number>(64);
-  for (let o = 0; o < bytes.length; o += 64) {
+const INIT = [
+  0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c,
+  0x1f83d9ab, 0x5be0cd19,
+];
+// Streams input through one 64-byte block, so hashing a multi-megabyte result
+// body allocates nothing proportional to its size.
+class Sha256 {
+  private h = new Int32Array(INIT);
+  private w = new Int32Array(64);
+  private block = new Uint8Array(64);
+  private used = 0;
+  /** Bytes in completed blocks; `used` holds the rest. */
+  private length = 0;
+  byte(b: number) {
+    this.block[this.used++] = b;
+    if (this.used === 64) {
+      this.length += 64;
+      this.compress();
+      this.used = 0;
+    }
+  }
+  bytes(list: ArrayLike<number>) {
+    for (let i = 0; i < list.length; i++) this.byte(list[i]);
+    return this;
+  }
+  text(s: string) {
+    // ASCII fast path: JSON bodies are mostly ASCII (base64 images), and
+    // Tiled's engine may run without a JIT, where per-byte calls dominate.
+    const block = this.block;
+    for (let i = 0; i < s.length; i++) {
+      const c = s.charCodeAt(i);
+      if (c >= 0x80) {
+        utf8(s.slice(i), this);
+        return this;
+      }
+      block[this.used++] = c;
+      if (this.used === 64) {
+        this.length += 64;
+        this.compress();
+        this.used = 0;
+      }
+    }
+    return this;
+  }
+  digest() {
+    // Messages stay far below 2^53 bits; the high word is exact.
+    const bits = (this.length + this.used) * 8,
+      high = Math.floor(bits / 0x100000000),
+      low = bits >>> 0;
+    this.byte(0x80);
+    while (this.used !== 56) this.byte(0);
+    for (const word of [high, low])
+      for (let shift = 24; shift >= 0; shift -= 8)
+        this.byte((word >>> shift) & 255);
+    const out = new Uint8Array(32);
+    for (let i = 0; i < 8; i++)
+      for (let j = 0; j < 4; j++)
+        out[4 * i + j] = (this.h[i] >>> (24 - 8 * j)) & 255;
+    return out;
+  }
+  private compress() {
+    const w = this.w,
+      b8 = this.block,
+      h = this.h;
     for (let i = 0; i < 16; i++)
       w[i] =
-        (bytes[o + 4 * i] << 24) |
-        (bytes[o + 4 * i + 1] << 16) |
-        (bytes[o + 4 * i + 2] << 8) |
-        bytes[o + 4 * i + 3];
+        (b8[4 * i] << 24) |
+        (b8[4 * i + 1] << 16) |
+        (b8[4 * i + 2] << 8) |
+        b8[4 * i + 3];
     for (let i = 16; i < 64; i++) {
-      const a = w[i - 15],
-        b = w[i - 2];
-      const s0 = ((a >>> 7) | (a << 25)) ^ ((a >>> 18) | (a << 14)) ^ (a >>> 3);
+      const x = w[i - 15],
+        y = w[i - 2];
+      const s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
       const s1 =
-        ((b >>> 17) | (b << 15)) ^ ((b >>> 19) | (b << 13)) ^ (b >>> 10);
+        ((y >>> 17) | (y << 15)) ^ ((y >>> 19) | (y << 13)) ^ (y >>> 10);
       w[i] = (w[i - 16] + s0 + w[i - 7] + s1) | 0;
     }
-    let [a, b, c, d, e, f, g, hh] = h;
+    let a = h[0],
+      b = h[1],
+      c = h[2],
+      d = h[3],
+      e = h[4],
+      f = h[5],
+      g = h[6],
+      hh = h[7];
     for (let i = 0; i < 64; i++) {
       const S1 =
         ((e >>> 6) | (e << 26)) ^
@@ -94,26 +146,34 @@ function digest(bytes: number[]): number[] {
       b = a;
       a = (t1 + t2) | 0;
     }
-    const next = [a, b, c, d, e, f, g, hh];
-    for (let i = 0; i < 8; i++) h[i] = (h[i] + next[i]) | 0;
+    h[0] += a;
+    h[1] += b;
+    h[2] += c;
+    h[3] += d;
+    h[4] += e;
+    h[5] += f;
+    h[6] += g;
+    h[7] += hh;
   }
-  const out: number[] = [];
-  for (const word of h)
-    out.push(word >>> 24, (word >>> 16) & 255, (word >>> 8) & 255, word & 255);
-  return out;
 }
-function hex(bytes: number[]) {
+function hex(bytes: Uint8Array) {
   let s = "";
-  for (const b of bytes) s += (b < 16 ? "0" : "") + b.toString(16);
+  for (let i = 0; i < bytes.length; i++)
+    s += (bytes[i] < 16 ? "0" : "") + bytes[i].toString(16);
   return s;
 }
 export function sha256Hex(message: string) {
-  return hex(digest(utf8(message)));
+  return hex(new Sha256().text(message).digest());
 }
 export function hmacSha256Hex(key: string, message: string) {
-  let k = utf8(key);
-  if (k.length > 64) k = digest(k);
-  while (k.length < 64) k.push(0);
-  const inner = digest(k.map((b) => b ^ 0x36).concat(utf8(message)));
-  return hex(digest(k.map((b) => b ^ 0x5c).concat(inner)));
+  const raw: number[] = [];
+  utf8(key, { byte: (b) => raw.push(b) });
+  const k = raw.length > 64 ? new Sha256().bytes(raw).digest() : raw;
+  const pad = (x: number) => {
+    const out = new Uint8Array(64);
+    for (let i = 0; i < 64; i++) out[i] = (i < k.length ? k[i] : 0) ^ x;
+    return out;
+  };
+  const inner = new Sha256().bytes(pad(0x36)).text(message).digest();
+  return hex(new Sha256().bytes(pad(0x5c)).bytes(inner).digest());
 }
