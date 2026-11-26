@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
 import assert from "node:assert/strict";
 const socket = createServer();
 await new Promise((r) => socket.listen(0, "127.0.0.1", r));
@@ -19,11 +19,39 @@ const clients = [];
 let running = true,
   pollLoop,
   mutations = 0;
+// Independent implementation of the v2 handshake, so the test does not share
+// code with the client it exercises.
+const hmac = (key, message) =>
+  createHmac("sha256", key).update(message).digest("hex");
+let session;
+async function handshake() {
+  const cn = randomBytes(16).toString("hex");
+  const res = await fetch(`http://127.0.0.1:${port}/handshake`, {
+    method: "POST",
+    body: JSON.stringify({ clientNonce: cn }),
+  });
+  const { serverNonce: sn, proof } = await res.json();
+  const label = (kind) => ["tiled-ai v2", kind, cn, sn].join("\n");
+  assert.equal(proof, hmac(token, label("server")), "server proof");
+  session = { cn, sn, key: hmac(token, label("session")), seq: 0 };
+}
 const post = async (path, body) => {
+  if (!session) await handshake();
+  const text = JSON.stringify(body),
+    seq = ++session.seq,
+    digest = createHash("sha256").update(text).digest("hex");
   const res = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: "POST",
-    headers: { authorization: "Bearer " + token },
-    body: JSON.stringify(body),
+    headers: {
+      "x-tiled-ai-client": session.cn,
+      "x-tiled-ai-server": session.sn,
+      "x-tiled-ai-seq": String(seq),
+      "x-tiled-ai-mac": hmac(
+        session.key,
+        ["tiled-ai v2", "request", seq, "POST", path, digest].join("\n"),
+      ),
+    },
+    body: text,
   });
   return res.json();
 };

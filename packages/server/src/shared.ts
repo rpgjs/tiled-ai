@@ -1,27 +1,21 @@
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 import { RpcError } from "../../protocol/src/index";
+import { BridgeChannel } from "./channel";
 export class SharedBridge {
-  constructor(
-    private port: number,
-    private token: string,
-  ) {}
-  private async post(path: string, body: unknown, timeout = 40000) {
-    return fetch(`http://127.0.0.1:${this.port}${path}`, {
-      method: "POST",
-      headers: {
-        authorization: "Bearer " + this.token,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeout),
-    });
+  private channel: BridgeChannel;
+  constructor(port: number, token: string) {
+    this.channel = new BridgeChannel(port, token);
+  }
+  private post(path: string, body: unknown, timeout = 40000) {
+    return this.channel.post(path, body, timeout);
   }
   async health() {
     let response: Response;
     try {
       response = await this.post("/health", {}, 1000);
     } catch (e: any) {
+      if (e instanceof RpcError) throw e;
       if (e.cause?.code === "ECONNREFUSED") return null;
       throw new RpcError(
         "BRIDGE_UNAVAILABLE",
@@ -31,10 +25,10 @@ export class SharedBridge {
     if (!response.ok)
       throw new RpcError(
         "BRIDGE_INCOMPATIBLE",
-        "The port belongs to an older Tiled AI server or uses another secret. Stop the older server, then restart the MCP integration.",
+        "The port belongs to an older Tiled AI server. Stop the older server, then restart the MCP integration.",
       );
     const health = (await response.json()) as any;
-    if (health.service !== "tiled-ai-shared-bridge" || health.version !== 1)
+    if (health.service !== "tiled-ai-shared-bridge" || health.version !== 2)
       throw new RpcError(
         "BRIDGE_INCOMPATIBLE",
         "Incompatible service on the configured bridge port",

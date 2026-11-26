@@ -1,5 +1,6 @@
 import http from "node:http";
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { ServerAuth } from "./auth";
 import {
   VERSION,
   toolSchemas,
@@ -28,10 +29,12 @@ export class Bridge {
   onStop?: () => void;
   readonly sessions = new Map<string, Session>();
   readonly server: http.Server;
+  private auth: ServerAuth;
   constructor(
-    private token: string,
+    token: string,
     private timeoutMs = 30000,
   ) {
+    this.auth = new ServerAuth(token);
     this.server = http.createServer((req, res) => {
       this.route(req, res).catch((e) => {
         if (!res.headersSent) this.send(res, 400, { error: String(e) });
@@ -71,17 +74,21 @@ export class Bridge {
     res.end(JSON.stringify(value));
   }
   private async route(req: http.IncomingMessage, res: http.ServerResponse) {
-    const auth = Buffer.from(req.headers.authorization ?? ""),
-      expected = Buffer.from("Bearer " + this.token);
     if (
       req.method !== "POST" ||
       req.headers.origin ||
+      req.headers.authorization ||
       !["127.0.0.1", "::ffff:127.0.0.1"].includes(
         req.socket.remoteAddress ?? "",
-      ) ||
-      auth.length !== expected.length ||
-      !timingSafeEqual(auth, expected)
+      )
     ) {
+      this.send(res, 403, { error: "Forbidden" });
+      return;
+    }
+    const handshake = req.url === "/handshake";
+    // The secret is never accepted or sent. Reject before buffering a body
+    // when the request cannot possibly carry a MAC.
+    if (!handshake && !req.headers["x-tiled-ai-mac"]) {
       this.send(res, 403, { error: "Forbidden" });
       return;
     }
@@ -89,17 +96,42 @@ export class Bridge {
     const chunks: Buffer[] = [];
     for await (const part of req) {
       size += part.length;
-      if (size > 32 * 1024 * 1024) {
+      if (size > (handshake ? 1024 : 32 * 1024 * 1024)) {
         this.send(res, 413, { error: "Body too large" });
         return;
       }
       chunks.push(part);
     }
-    const body = JSON.parse(Buffer.concat(chunks).toString());
+    const text = Buffer.concat(chunks).toString();
+    if (handshake) {
+      const hello = this.auth.handshake(JSON.parse(text).clientNonce);
+      this.send(res, hello ? 200 : 400, hello ?? { error: "Invalid nonce" });
+      return;
+    }
+    const verdict = this.auth.verify(
+      req.method,
+      req.url ?? "",
+      text,
+      (name) => {
+        const v = req.headers[name];
+        return Array.isArray(v) ? v[0] : v;
+      },
+    );
+    if (verdict !== "ok") {
+      this.send(
+        res,
+        verdict === "expired" ? 401 : 403,
+        verdict === "expired"
+          ? { error: "CHANNEL_EXPIRED" }
+          : { error: "Forbidden" },
+      );
+      return;
+    }
+    const body = JSON.parse(text);
     if (req.url === "/health" && this.clientCall) {
       this.send(res, 200, {
         service: "tiled-ai-shared-bridge",
-        version: 1,
+        version: 2,
         pid: process.pid,
       });
       return;

@@ -1,28 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Bridge } from "../packages/server/src/bridge";
+import { BridgeChannel } from "../packages/server/src/channel";
 const token = "0123456789abcdef0123456789abcdef";
 async function fixture(timeout = 1000) {
   const bridge = new Bridge(token, timeout),
-    port = await bridge.listen(0);
-  const post = async (
-    path: string,
-    body: unknown,
-    headers: Record<string, string> = {},
-  ) =>
-    fetch(`http://127.0.0.1:${port}` + path, {
-      method: "POST",
-      headers: {
-        authorization: "Bearer " + token,
-        "Content-Type": "application/json",
-        ...headers,
-      },
-      body: JSON.stringify(body),
-    });
+    port = await bridge.listen(0),
+    channel = new BridgeChannel(port, token);
+  const post = (path: string, body: unknown) => channel.post(path, body);
   const connected = (await (
     await post("/connect", { version: 1 })
   ).json()) as any;
-  return { bridge, post, sessionId: connected.sessionId };
+  return { bridge, port, post, sessionId: connected.sessionId };
 }
 const mutation = (sessionId: string) => ({
   sessionId,
@@ -37,24 +26,17 @@ const mutation = (sessionId: string) => ({
     },
   ],
 });
-test("local bridge rejects invalid tokens, browser origins and protocol versions", async () => {
+test("local bridge rejects bearer tokens, browser origins and protocol versions", async () => {
   const f = await fixture();
+  const raw = (headers: Record<string, string>) =>
+    fetch(`http://127.0.0.1:${f.port}/connect`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ version: 1 }),
+    });
   try {
-    assert.equal(
-      (await f.post("/connect", { version: 1 }, { authorization: "wrong" }))
-        .status,
-      403,
-    );
-    assert.equal(
-      (
-        await f.post(
-          "/connect",
-          { version: 1 },
-          { origin: "https://example.org" },
-        )
-      ).status,
-      403,
-    );
+    assert.equal((await raw({ authorization: "Bearer " + token })).status, 403);
+    assert.equal((await raw({ origin: "https://example.org" })).status, 403);
     assert.equal((await f.post("/connect", { version: 2 })).status, 400);
   } finally {
     await f.bridge.close();

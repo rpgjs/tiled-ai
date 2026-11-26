@@ -6,6 +6,7 @@ import {
   RpcError,
   type RpcResult,
 } from "../../protocol/src/index";
+import { ClientChannel, pureCrypto, weakNonce } from "../../protocol/src/auth";
 declare class XMLHttpRequest {
   readyState: number;
   status: number;
@@ -30,38 +31,94 @@ let config: Config;
 const pending = new Set<XMLHttpRequest>();
 let generation = 0;
 const cache = new Map<string, { signature: string; result: RpcResult }>();
+let channel: ClientChannel | undefined;
 function disconnect() {
   connected = false;
   generation++;
   for (const r of pending) r.abort();
   pending.clear();
+  channel = undefined;
   status = "Disconnected";
 }
-function request(path: string, body: unknown, done: (value: any) => void) {
-  const g = generation,
+function fail(message: string) {
+  disconnect();
+  status = message;
+  tiled.log("Tiled AI: " + status);
+}
+// The server must prove it knows the secret before any request is signed; the
+// secret itself never leaves this process.
+function handshake(g: number, done: (c: ClientChannel) => void) {
+  const clientNonce = weakNonce(pureCrypto),
     r = new XMLHttpRequest();
   pending.add(r);
-  r.open("POST", config.url + path, true);
-  r.setRequestHeader("Authorization", "Bearer " + config.token);
+  r.open("POST", config.url + "/handshake", true);
   r.setRequestHeader("Content-Type", "application/json");
   r.onreadystatechange = () => {
     if (r.readyState !== 4 || g !== generation) return;
     pending.delete(r);
+    let accepted: ClientChannel | undefined;
+    try {
+      if (r.status === 200)
+        accepted = ClientChannel.accept(
+          pureCrypto,
+          config.token,
+          clientNonce,
+          JSON.parse(r.responseText),
+        );
+    } catch {
+      /* Malformed answers fail like a wrong proof. */
+    }
+    if (!accepted) {
+      fail(
+        "Bridge did not prove knowledge of the secret (HTTP " +
+          r.status +
+          "); nothing was sent. Check what owns the port.",
+      );
+      return;
+    }
+    channel = accepted;
+    done(accepted);
+  };
+  r.send(JSON.stringify({ clientNonce }));
+}
+function request(
+  path: string,
+  body: unknown,
+  done: (value: any) => void,
+  retry = true,
+) {
+  const g = generation;
+  if (!channel) {
+    handshake(g, () => request(path, body, done, retry));
+    return;
+  }
+  const text = JSON.stringify(body),
+    headers = channel.sign("POST", path, text),
+    r = new XMLHttpRequest();
+  pending.add(r);
+  r.open("POST", config.url + path, true);
+  r.setRequestHeader("Content-Type", "application/json");
+  for (const name in headers) r.setRequestHeader(name, headers[name]);
+  r.onreadystatechange = () => {
+    if (r.readyState !== 4 || g !== generation) return;
+    pending.delete(r);
+    if (r.status === 401 && retry) {
+      // Rejected before execution, so repeating on a new channel is safe.
+      channel = undefined;
+      request(path, body, done, false);
+      return;
+    }
     if (r.status !== 200) {
-      disconnect();
-      status = "Connection lost: HTTP " + r.status;
-      tiled.log("Tiled AI: " + status);
+      fail("Connection lost: HTTP " + r.status);
       return;
     }
     try {
       done(JSON.parse(r.responseText));
     } catch (e) {
-      disconnect();
-      status = String(e);
-      tiled.log("Tiled AI: " + status);
+      fail(String(e));
     }
   };
-  r.send(JSON.stringify(body));
+  r.send(text);
 }
 function poll() {
   if (!connected) return;
